@@ -25,6 +25,7 @@
 
     <div id="chatUI" style="display:none">
       <div id="status">Not connected</div>
+      <div id="typingIndicator" style="color:#888;margin-top:6px;height:18px"></div>
       <div id="messages"></div>
       <div id="controls">
         <input id="messageInput" placeholder="Type a message" style="flex:1" />
@@ -45,6 +46,7 @@
       let partnerType = null;
       const statusEl = document.getElementById('status');
       const messagesEl = document.getElementById('messages');
+      const typingIndicator = document.getElementById('typingIndicator');
       const inputEl = document.getElementById('messageInput');
       const sendBtn = document.getElementById('sendBtn');
       const promptArea = document.getElementById('promptArea');
@@ -141,6 +143,14 @@
           }
         });
 
+        socket.on('partner_typing', (data) => {
+          showTyping(true);
+        });
+
+        socket.on('partner_stop_typing', (data) => {
+          showTyping(false);
+        });
+
         socket.on('turing_prompt', (data) => {
           promptArea.innerHTML = '';
           const p = document.createElement('div');
@@ -218,17 +228,43 @@
           promptArea.appendChild(d);
         }
 
+        let typing = false;
+        let typingTimeout = null;
+        const TYPING_DELAY = 1400;
+
+        function showTyping(flag) {
+          if (!typingIndicator) return;
+          typingIndicator.textContent = flag ? 'Partner is typing...' : '';
+        }
+
+        inputEl.addEventListener('input', () => {
+          if (!socket || !sessionId) return;
+          if (!typing) {
+            typing = true;
+            socket.emit('typing', { sessionId });
+          }
+          clearTimeout(typingTimeout);
+          typingTimeout = setTimeout(() => {
+            typing = false;
+            if (socket && sessionId) socket.emit('stop_typing', { sessionId });
+          }, TYPING_DELAY);
+        });
+
 
         sendBtn.onclick = () => {
           const text = inputEl.value.trim();
           if (!text || !sessionId) return;
           socket.emit('send_message', { sessionId, text });
+          
+          if (socket && sessionId) socket.emit('stop_typing', { sessionId });
+          typing = false;
+          clearTimeout(typingTimeout);
           inputEl.value = '';
         };
 
-        // Skip button logic
         const skipBtn = document.getElementById('skipBtn');
         skipBtn.onclick = () => {
+          if (socket && sessionId) socket.emit('stop_typing', { sessionId });
           socket.emit('skip_partner');
           statusEl.textContent = 'Searching for new partner...';
           messagesEl.innerHTML = '';
@@ -244,7 +280,6 @@
         });
       }
 
-      // On page load, check for session and restore if possible
       if (loadSession()) {
         showChatUI();
         connectSocket();

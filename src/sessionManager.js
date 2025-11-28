@@ -120,6 +120,37 @@ function init(io) {
       }
     });
 
+    socket.on('typing', (data) => {
+      const sid = data && data.sessionId ? data.sessionId : socketToSession.get(socket.id);
+      if (!sid) return;
+      const sess = sessions.get(sid);
+      if (!sess) return;
+      
+      if (sess.partnerIsAI) return;
+      if (sess.humanSockets) {
+        sess.humanSockets.forEach((s) => {
+          if (s.id !== socket.id) {
+            s.emit('partner_typing', { userId: socket.userId });
+          }
+        });
+      }
+    });
+
+    socket.on('stop_typing', (data) => {
+      const sid = data && data.sessionId ? data.sessionId : socketToSession.get(socket.id);
+      if (!sid) return;
+      const sess = sessions.get(sid);
+      if (!sess) return;
+      if (sess.partnerIsAI) return;
+      if (sess.humanSockets) {
+        sess.humanSockets.forEach((s) => {
+          if (s.id !== socket.id) {
+            s.emit('partner_stop_typing', { userId: socket.userId });
+          }
+        });
+      }
+    });
+
     socket.on('submit_guess', (data) => {
       const sid = data && data.sessionId ? data.sessionId : socketToSession.get(socket.id);
       if (!sid) return;
