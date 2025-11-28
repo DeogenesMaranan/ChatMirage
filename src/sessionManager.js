@@ -1,272 +1,244 @@
-
 const { aiRespond } = require('./ai');
-const fs = require('fs');
-const path = require('path');
 
-const SESSIONS_DIR = path.join(__dirname, '../sessions');
-if (!fs.existsSync(SESSIONS_DIR)) {
-  fs.mkdirSync(SESSIONS_DIR);
-}
+const { randomBytes } = require('crypto');
 
-const waitingQueue = [];
+const MESSAGE_THRESHOLD = 10;
+
 const sessions = new Map();
+const waitingQueue = [];
+const socketToSession = new Map();
 
-let nextSessionId = 1;
-
-
-function loadChatHistory(sessionId) {
-  const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
-  if (fs.existsSync(filePath)) {
-    try {
-      const data = fs.readFileSync(filePath, 'utf8');
-      return JSON.parse(data);
-    } catch (e) {
-      return [];
-    }
-  }
-  return [];
-}
-
-function saveChatHistory(sessionId, chatHistory) {
-  const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(chatHistory, null, 2));
-}
-
-function createSession(participants, sessionIdOverride) {
-  const sessionId = sessionIdOverride || String(nextSessionId++);
-  const chatHistory = loadChatHistory(sessionId);
-  const session = {
-    id: sessionId,
-    participants: participants,
-    messageCount: chatHistory.length,
-    chatHistory: chatHistory,
-    awaitingGuesses: new Map(),
-    awaitingContinue: new Map(),
-    closed: false
-  };
-  sessions.set(sessionId, session);
-  return session;
-}
-
-function pairWithAI(socket) {
-  const session = createSession([socket, { type: 'ai' }]);
-  socket.join(session.id);
-  socket.emit('paired', { sessionId: session.id, partnerType: 'ai', partnerId: 'AI' });
-}
-
-function tryPair(socket) {
-
-  const auth = socket.handshake && (socket.handshake.auth || socket.handshake.query || {});
-  const forced = auth && (auth.forcePartner || auth.force);
-  if (forced === 'ai') {
-    pairWithAI(socket);
-    return;
-  }
-
-  const pairWithAIChosen = Math.random() < 0.5;
-  if (pairWithAIChosen) {
-    pairWithAI(socket);
-    return;
-  }
-
-  if (waitingQueue.length >= 2) {
-    const idx = waitingQueue.indexOf(socket);
-    if (idx !== -1) waitingQueue.splice(idx, 1);
-    let other = null;
-    for (let i = 0; i < waitingQueue.length; i++) {
-      if (waitingQueue[i] && waitingQueue[i].connected) {
-        other = waitingQueue.splice(i, 1)[0];
-        break;
-      }
-    }
-    if (other) {
-      const session = createSession([socket, other]);
-      socket.join(session.id);
-      other.join(session.id);
-      socket.emit('paired', { sessionId: session.id, partnerType: 'human', partnerId: other.id });
-      other.emit('paired', { sessionId: session.id, partnerType: 'human', partnerId: socket.id });
-      return;
-    }
-  }
-
-  setTimeout(() => {
-    if (!sessions.has(socket.sessionId)) {
-      pairWithAI(socket);
-    }
-  }, 5000);
-}
-
-
-async function handleMessage(session, fromSocket, text) {
-  if (session.closed) return;
-
-  session.messageCount += 1;
-  session.chatHistory.push({ from: fromSocket.type === 'ai' ? 'ai' : 'human', text });
-  saveChatHistory(session.id, session.chatHistory);
-
-  fromSocket.emit('chat_message', { from: 'me', text });
-
-  for (const p of session.participants) {
-    if (p === fromSocket) continue;
-    if (p.type === 'ai') continue;
-    p.emit('chat_message', { from: 'partner', text });
-  }
-
-  const isAiSession = session.participants.some((p) => p.type === 'ai');
-  if (isAiSession) {
-    const humanSocket = session.participants.find((p) => p.type !== 'ai');
-    if (fromSocket === humanSocket) {
-      const reply = await aiRespond(session.chatHistory);
-      session.messageCount += 1;
-      session.chatHistory.push({ from: 'ai', text: reply });
-      saveChatHistory(session.id, session.chatHistory);
-      humanSocket.emit('chat_message', { from: 'partner', text: reply });
-    }
-  }
-
-  if (session.messageCount > 0 && session.messageCount % 10 === 0) {
-    triggerTuringPrompt(session);
-  }
-}
-
-function triggerTuringPrompt(session) {
-  if (session.closed) return;
-  const isAiSession = session.participants.some((p) => p.type === 'ai');
-  session.awaitingGuesses.clear();
-  session.awaitingContinue.clear();
-
-  if (isAiSession) {
-    const humanSocket = session.participants.find((p) => p.type !== 'ai');
-    if (humanSocket && humanSocket.connected) {
-      session.awaitingGuesses.set(humanSocket.id, { guessed: false, correct: null });
-      humanSocket.emit('turing_prompt', { prompt: "Do you think your chat partner is Human or AI?" });
-    }
-  } else {
-    for (const p of session.participants) {
-      session.awaitingGuesses.set(p.id, { guessed: false, correct: null });
-      if (p.connected) p.emit('turing_prompt', { prompt: "Do you think your chat partner is Human or AI?" });
-    }
-  }
-}
-
-function handleGuess(session, socket, guess) {
-  if (session.closed) return;
-  const partnerIsHuman = session.participants.some((p) => p !== socket && p.type !== 'ai');
-  const expected = partnerIsHuman ? 'Human' : 'AI';
-  const correct = guess === expected;
-  session.awaitingGuesses.set(socket.id, { guessed: true, correct });
-  socket.emit('guess_result', { correct });
-
-  if (!partnerIsHuman && guess === 'AI') {
-    endSession(session, `correct_ai_guess_by_${socket.id}`);
-    return;
-  }
-
-  if (partnerIsHuman) {
-    for (const p of session.participants) {
-      if (p.type !== 'ai' && p.connected) {
-        session.awaitingContinue.set(p.id, null);
-        p.emit('post_guess_options', { message: 'Do you want to continue or end the chat?' });
-      }
-    }
-  } else {
-    // AI session, only prompt the guesser
-    session.awaitingContinue.set(socket.id, null);
-    socket.emit('post_guess_options', { message: 'Do you want to continue or end the chat?' });
-  }
-}
-
-function handleContinueChoice(session, socket, choice) {
-  if (session.closed) return;
-  if (!session.awaitingContinue.has(socket.id)) return;
-  session.awaitingContinue.set(socket.id, choice === 'continue');
-
-  for (const val of session.awaitingContinue.values()) {
-    if (val === false) {
-      endSession(session, 'ended_by_choice');
-      return;
-    }
-  }
-
-  for (const val of session.awaitingContinue.values()) {
-    if (val === null) return;
-  }
-
-  for (const p of session.participants) {
-    if (p.type !== 'ai' && p.connected) p.emit('resume_chat', { message: 'Chat resumed after successful Turing responses.' });
-  }
-
-  session.awaitingGuesses.clear();
-  session.awaitingContinue.clear();
-}
-
-
-function endSession(session, reason) {
-  if (session.closed) return;
-  session.closed = true;
-  saveChatHistory(session.id, session.chatHistory);
-  for (const p of session.participants) {
-    if (p && p.type !== 'ai' && p.connected) {
-      p.emit('chat_ended', { reason });
-      try { p.leave(session.id); } catch (e) {}
-    }
-  }
-  sessions.delete(session.id);
-}
-
-function handleDisconnect(socket) {
-  const idx = waitingQueue.indexOf(socket);
-  if (idx !== -1) waitingQueue.splice(idx, 1);
-
-  for (const session of sessions.values()) {
-    if (session.participants.some((p) => p === socket)) {
-      for (const p of session.participants) {
-        if (p !== socket && p.type !== 'ai' && p.connected) {
-          p.emit('partner_disconnected', { message: 'Your partner disconnected. Chat ended.' });
-        }
-      }
-      endSession(session, `disconnect_${socket.id}`);
-      break;
-    }
-  }
+function makeSessionId() {
+  return 's_' + randomBytes(6).toString('hex');
 }
 
 function init(io) {
   io.on('connection', (socket) => {
-    waitingQueue.push(socket);
-    tryPair(socket);
+    const auth = socket.handshake && socket.handshake.auth ? socket.handshake.auth : {};
+    const userId = auth.userId || ('u_' + socket.id);
+    const forced = auth.forcePartner || null;
 
-    socket.on('send_message', async (data) => {
-      const { sessionId, text } = data || {};
-      const session = sessions.get(sessionId);
-      if (!session) return;
-      await handleMessage(session, socket, String(text || ''));
+    socket.userId = userId;
+
+    socket.on('disconnect', () => {
+      for (let i = 0; i < waitingQueue.length; i++) {
+        if (waitingQueue[i].socket.id === socket.id) {
+          waitingQueue.splice(i, 1);
+          break;
+        }
+      }
+
+      const sid = socketToSession.get(socket.id);
+      if (sid) {
+        const sess = sessions.get(sid);
+        if (sess) {
+          if (sess.humanSockets) {
+            sess.humanSockets.forEach((s) => {
+              if (s.id !== socket.id) {
+                s.emit('partner_disconnected', { message: 'Partner disconnected' });
+                s.emit('chat_ended', { reason: 'partner_disconnected' });
+                socketToSession.delete(s.id);
+              }
+            });
+          }
+          sessions.delete(sid);
+        }
+        socketToSession.delete(socket.id);
+      }
+    });
+
+    socket.on('skip_partner', () => {
+      const sid = socketToSession.get(socket.id);
+      if (sid) {
+        const sess = sessions.get(sid);
+        if (sess) {
+          if (sess.humanSockets) {
+            sess.humanSockets.forEach((s) => {
+              if (s.id !== socket.id) {
+                s.emit('partner_disconnected', { message: 'Partner skipped' });
+                s.emit('chat_ended', { reason: 'skipped' });
+                socketToSession.delete(s.id);
+              }
+            });
+          }
+          sessions.delete(sid);
+        }
+        socketToSession.delete(socket.id);
+      }
+
+      pairForSocket(socket, forced, io);
     });
 
     socket.on('request_history', (data) => {
-      const { sessionId } = data || {};
-      const chatHistory = loadChatHistory(sessionId);
-      socket.emit('chat_history', { chatHistory });
+      const sid = data && data.sessionId ? data.sessionId : socketToSession.get(socket.id);
+      if (!sid) return;
+      const sess = sessions.get(sid);
+      if (!sess) return;
+      socket.emit('chat_history', { chatHistory: sess.chatHistory });
+    });
+
+    socket.on('send_message', async (data) => {
+      const sid = data && data.sessionId ? data.sessionId : socketToSession.get(socket.id);
+      if (!sid) return;
+      const text = (data && data.text) ? String(data.text) : '';
+      if (!text) return;
+      const sess = sessions.get(sid);
+      if (!sess) return;
+
+      const msg = { userId: socket.userId, from: 'human', text };
+      sess.chatHistory.push(msg);
+
+      if (sess.partnerIsAI) {
+        socket.emit('chat_message', { from: 'me', text });
+        socket.emit('chat_history_update', { chatHistory: sess.chatHistory });
+        try {
+          const aiText = await aiRespond(sess.chatHistory.slice());
+          const aiMsg = { from: 'ai', text: aiText };
+          sess.chatHistory.push(aiMsg);
+          socket.emit('chat_message', { from: 'partner', text: aiText });
+        } catch (err) {
+          console.error('AI response failed', err);
+        }
+      } else {
+        sess.humanSockets.forEach((s) => {
+          if (s.id === socket.id) {
+            s.emit('chat_message', { from: 'me', text });
+          } else {
+            s.emit('chat_message', { from: 'partner', text });
+          }
+        });
+      }
+
+      if (!sess.prompted && sess.chatHistory.length % MESSAGE_THRESHOLD === 0) {
+        sess.prompted = true;
+        const prompt = 'After these messages, guess whether your partner is Human or AI.';
+        if (sess.partnerIsAI) {
+          sess.humanSockets.forEach((s) => s.emit('turing_prompt', { prompt }));
+        } else {
+          sess.humanSockets.forEach((s) => s.emit('turing_prompt', { prompt }));
+        }
+      }
     });
 
     socket.on('submit_guess', (data) => {
-      const { sessionId, guess } = data || {};
-      const session = sessions.get(sessionId);
-      if (!session) return;
-      handleGuess(session, socket, guess);
+      const sid = data && data.sessionId ? data.sessionId : socketToSession.get(socket.id);
+      if (!sid) return;
+      const guess = data && data.guess ? String(data.guess).toLowerCase() : '';
+      const sess = sessions.get(sid);
+      if (!sess) return;
+
+      const actualIsAI = !!sess.partnerIsAI;
+      const guessedAI = guess === 'ai' || guess === 'a.i.' || guess === 'a i';
+      const correct = (guessedAI && actualIsAI) || (!guessedAI && !actualIsAI);
+
+      socket.emit('guess_result', { correct });
+
+      if (correct && actualIsAI && guessedAI) {
+        sess.humanSockets.forEach((s) => {
+          s.emit('chat_ended', { reason: 'guessed_ai_correctly' });
+          socketToSession.delete(s.id);
+        });
+        sessions.delete(sid);
+        return;
+      }
+
+      socket.emit('post_guess_options', { message: correct ? 'Correct guess.' : 'Incorrect guess.' });
     });
 
     socket.on('submit_continue_choice', (data) => {
-      const { sessionId, choice } = data || {};
-      const session = sessions.get(sessionId);
-      if (!session) return;
-      handleContinueChoice(session, socket, choice);
+      const sid = data && data.sessionId ? data.sessionId : socketToSession.get(socket.id);
+      if (!sid) return;
+      const choice = data && data.choice ? String(data.choice).toLowerCase() : '';
+      const sess = sessions.get(sid);
+      if (!sess) return;
+
+      if (choice === 'end') {
+        sess.humanSockets.forEach((s) => {
+          s.emit('chat_ended', { reason: 'ended_by_user' });
+          socketToSession.delete(s.id);
+        });
+        sessions.delete(sid);
+        return;
+      }
+
+      if (choice === 'continue') {
+        sess.prompted = false;
+        sess.chatHistory = sess.chatHistory || [];
+        sess.humanSockets.forEach((s) => s.emit('resume_chat', { message: 'Continuing chat...' }));
+      }
     });
 
-    socket.on('disconnect', () => {
-      handleDisconnect(socket);
-    });
+    pairForSocket(socket, forced, io);
   });
 }
 
-module.exports = { init, _internal: { waitingQueue, sessions } };
+function pairForSocket(socket, forced, io) {
+  if (forced === 'ai') {
+    pairWithAI(socket, io);
+    return;
+  }
+
+  if (waitingQueue.length > 0) {
+    let other = null;
+    while (waitingQueue.length > 0) {
+      const candidate = waitingQueue.shift();
+      if (!candidate || !candidate.socket) continue;
+      if (candidate.socket.id === socket.id) {
+        continue;
+      }
+      other = candidate;
+      break;
+    }
+
+    if (!other || !other.socket) {
+      pairWithAI(socket, io);
+      return;
+    }
+
+    const sid = makeSessionId();
+    const sess = {
+      id: sid,
+      partnerIsAI: false,
+      humanSockets: [socket, other.socket],
+      chatHistory: [],
+      prompted: false,
+    };
+    sessions.set(sid, sess);
+    socketToSession.set(socket.id, sid);
+    socketToSession.set(other.socket.id, sid);
+
+    socket.emit('paired', { sessionId: sid, partnerType: 'human', partnerId: other.userId });
+    other.socket.emit('paired', { sessionId: sid, partnerType: 'human', partnerId: socket.userId });
+    return;
+  }
+
+  const useAI = Math.random() < 0.5;
+  if (useAI) {
+    pairWithAI(socket, io);
+  } else {
+    const alreadyQueued = waitingQueue.some((e) => e && e.socket && e.socket.id === socket.id);
+    if (!alreadyQueued) {
+      waitingQueue.push({ socket, userId: socket.userId });
+    }
+    socket.emit('paired', { sessionId: null, partnerType: 'waiting', partnerId: null });
+    socket.emit('chat_history', { chatHistory: [] });
+  }
+}
+
+function pairWithAI(socket, io) {
+  const sid = makeSessionId();
+  const sess = {
+    id: sid,
+    partnerIsAI: true,
+    humanSockets: [socket],
+    chatHistory: [],
+    prompted: false,
+  };
+  sessions.set(sid, sess);
+  socketToSession.set(socket.id, sid);
+
+  socket.emit('paired', { sessionId: sid, partnerType: 'ai', partnerId: 'ai' });
+  socket.emit('chat_history', { chatHistory: [] });
+}
+
+module.exports = { init };
