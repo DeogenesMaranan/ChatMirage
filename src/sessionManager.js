@@ -1,17 +1,45 @@
+
 const { aiRespond } = require('./ai');
+const fs = require('fs');
+const path = require('path');
+
+const SESSIONS_DIR = path.join(__dirname, '../sessions');
+if (!fs.existsSync(SESSIONS_DIR)) {
+  fs.mkdirSync(SESSIONS_DIR);
+}
 
 const waitingQueue = [];
 const sessions = new Map();
 
 let nextSessionId = 1;
 
-function createSession(participants) {
-  const sessionId = String(nextSessionId++);
+
+function loadChatHistory(sessionId) {
+  const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
+  if (fs.existsSync(filePath)) {
+    try {
+      const data = fs.readFileSync(filePath, 'utf8');
+      return JSON.parse(data);
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
+function saveChatHistory(sessionId, chatHistory) {
+  const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(chatHistory, null, 2));
+}
+
+function createSession(participants, sessionIdOverride) {
+  const sessionId = sessionIdOverride || String(nextSessionId++);
+  const chatHistory = loadChatHistory(sessionId);
   const session = {
     id: sessionId,
     participants: participants,
-    messageCount: 0,
-    chatHistory: [],
+    messageCount: chatHistory.length,
+    chatHistory: chatHistory,
     awaitingGuesses: new Map(),
     awaitingContinue: new Map(),
     closed: false
@@ -27,10 +55,16 @@ function pairWithAI(socket) {
 }
 
 function tryPair(socket) {
-  // Allow forcing partner type for testing via handshake auth or query param.
+
   const auth = socket.handshake && (socket.handshake.auth || socket.handshake.query || {});
   const forced = auth && (auth.forcePartner || auth.force);
   if (forced === 'ai') {
+    pairWithAI(socket);
+    return;
+  }
+
+  const pairWithAIChosen = Math.random() < 0.5;
+  if (pairWithAIChosen) {
     pairWithAI(socket);
     return;
   }
@@ -54,6 +88,7 @@ function tryPair(socket) {
       return;
     }
   }
+
   setTimeout(() => {
     if (!sessions.has(socket.sessionId)) {
       pairWithAI(socket);
@@ -61,11 +96,13 @@ function tryPair(socket) {
   }, 5000);
 }
 
+
 async function handleMessage(session, fromSocket, text) {
   if (session.closed) return;
 
   session.messageCount += 1;
   session.chatHistory.push({ from: fromSocket.type === 'ai' ? 'ai' : 'human', text });
+  saveChatHistory(session.id, session.chatHistory);
 
   fromSocket.emit('chat_message', { from: 'me', text });
 
@@ -79,9 +116,10 @@ async function handleMessage(session, fromSocket, text) {
   if (isAiSession) {
     const humanSocket = session.participants.find((p) => p.type !== 'ai');
     if (fromSocket === humanSocket) {
-     const reply = await aiRespond(session.chatHistory);
+      const reply = await aiRespond(session.chatHistory);
       session.messageCount += 1;
       session.chatHistory.push({ from: 'ai', text: reply });
+      saveChatHistory(session.id, session.chatHistory);
       humanSocket.emit('chat_message', { from: 'partner', text: reply });
     }
   }
@@ -151,7 +189,7 @@ function handleContinueChoice(session, socket, choice) {
   }
 
   for (const val of session.awaitingContinue.values()) {
-    if (val === null) return; // still waiting
+    if (val === null) return;
   }
 
   for (const p of session.participants) {
@@ -162,9 +200,11 @@ function handleContinueChoice(session, socket, choice) {
   session.awaitingContinue.clear();
 }
 
+
 function endSession(session, reason) {
   if (session.closed) return;
   session.closed = true;
+  saveChatHistory(session.id, session.chatHistory);
   for (const p of session.participants) {
     if (p && p.type !== 'ai' && p.connected) {
       p.emit('chat_ended', { reason });
@@ -191,10 +231,8 @@ function handleDisconnect(socket) {
   }
 }
 
-// Initialize Socket.io connection handling. This wires per-socket event handlers.
 function init(io) {
   io.on('connection', (socket) => {
-    // When a client connects, add them to waiting queue and attempt pairing.
     waitingQueue.push(socket);
     tryPair(socket);
 
@@ -203,6 +241,12 @@ function init(io) {
       const session = sessions.get(sessionId);
       if (!session) return;
       await handleMessage(session, socket, String(text || ''));
+    });
+
+    socket.on('request_history', (data) => {
+      const { sessionId } = data || {};
+      const chatHistory = loadChatHistory(sessionId);
+      socket.emit('chat_history', { chatHistory });
     });
 
     socket.on('submit_guess', (data) => {
