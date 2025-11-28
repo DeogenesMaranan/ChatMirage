@@ -1,0 +1,193 @@
+<!-- public/index.html -->
+<!--
+  Single-page frontend for anonymous 1-to-1 chat.
+  - Connects to Socket.io backend
+  - Displays messages
+  - Sends messages
+  - Shows Turing prompt every 10 messages with guess buttons
+  - If guess correct, shows continue/end buttons
+-->
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Anonymous Chat (Human or AI)</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 720px; margin: 24px auto; }
+      #messages { border: 1px solid #ddd; height: 360px; padding: 12px; overflow-y: auto; background: #fafafa; }
+      .msg { margin: 6px 0; }
+      .me { color: #0b5394; }
+      .partner { color: #0b7a3f; }
+      #controls { margin-top: 12px; display:flex; gap:8px; }
+      #promptArea { margin-top: 12px; }
+      button { padding: 8px 12px; }
+    </style>
+  </head>
+  <body>
+    <h2>Anonymous Chat — Human or AI?</h2>
+
+    <div id="status">Connecting...</div>
+
+    <div id="messages"></div>
+
+    <div id="controls">
+      <input id="messageInput" placeholder="Type a message" style="flex:1" />
+      <button id="sendBtn">Send</button>
+    </div>
+
+    <div id="promptArea"></div>
+
+    <!-- Socket.io client script is served by the server at /socket.io/socket.io.js -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      // Client-side script to handle chat UI and Socket.io interactions
+      // Support forcing partner via URL param: `?force=ai` or `?force=human`
+      const urlParams = new URLSearchParams(location.search);
+      const forced = urlParams.get('force');
+      const socket = forced ? io({ auth: { forcePartner: forced } }) : io();
+
+      let sessionId = null;
+      let partnerType = null; // 'human' or 'ai'
+
+      const statusEl = document.getElementById('status');
+      const messagesEl = document.getElementById('messages');
+      const inputEl = document.getElementById('messageInput');
+      const sendBtn = document.getElementById('sendBtn');
+      const promptArea = document.getElementById('promptArea');
+
+      function addMessage(from, text) {
+        const div = document.createElement('div');
+        div.className = 'msg ' + (from === 'me' ? 'me' : 'partner');
+        div.textContent = (from === 'me' ? 'Me: ' : 'Partner: ') + text;
+        messagesEl.appendChild(div);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      // When the server notifies us of pairing, store session ID and partner type
+      socket.on('paired', (data) => {
+        sessionId = data.sessionId;
+        partnerType = data.partnerType;
+        statusEl.textContent = `Paired — Partner: ${data.partnerType} (${data.partnerId}) — Session ${sessionId}`;
+        appendPromptArea('Paired! Say hi.');
+      });
+
+      // Receive chat messages from server
+      socket.on('chat_message', (data) => {
+        // data: { from: 'me'|'partner', text }
+        addMessage(data.from, data.text);
+      });
+
+      // Turing prompt arrives every 10 messages
+      socket.on('turing_prompt', (data) => {
+        // Show guess UI
+        promptArea.innerHTML = '';
+        const p = document.createElement('div');
+        p.textContent = data.prompt;
+        promptArea.appendChild(p);
+
+        const humanBtn = document.createElement('button');
+        humanBtn.textContent = 'Human';
+        humanBtn.onclick = () => submitGuess('Human');
+        promptArea.appendChild(humanBtn);
+
+        const aiBtn = document.createElement('button');
+        aiBtn.textContent = 'AI';
+        aiBtn.onclick = () => submitGuess('AI');
+        promptArea.appendChild(aiBtn);
+      });
+
+      // Server response whether guess was correct
+      socket.on('guess_result', (data) => {
+        if (data.correct) {
+          appendPromptArea('Your guess was correct. Waiting for continue/end options...');
+        } else {
+          appendPromptArea('Incorrect guess — chat ended.');
+        }
+      });
+
+      // Show continue/end options after correct guesses
+      socket.on('post_guess_options', (data) => {
+        promptArea.innerHTML = '';
+        const p = document.createElement('div');
+        p.textContent = data.message;
+        promptArea.appendChild(p);
+
+        const cont = document.createElement('button');
+        cont.textContent = 'Continue';
+        cont.onclick = () => submitContinueChoice('continue');
+        promptArea.appendChild(cont);
+
+        const end = document.createElement('button');
+        end.textContent = 'End Chat';
+        end.onclick = () => submitContinueChoice('end');
+        promptArea.appendChild(end);
+      });
+
+      socket.on('resume_chat', (data) => {
+        appendPromptArea(data.message);
+        setTimeout(() => (promptArea.innerHTML = ''), 1500);
+      });
+
+      socket.on('chat_ended', (data) => {
+        appendPromptArea('Chat ended: ' + (data.reason || 'unknown'));
+        statusEl.textContent = 'Chat ended. Reload page to try again.';
+        // disable sending
+        inputEl.disabled = true;
+        sendBtn.disabled = true;
+      });
+
+      socket.on('partner_disconnected', (data) => {
+        appendPromptArea(data.message || 'Partner disconnected');
+        statusEl.textContent = 'Partner disconnected. Chat ended.';
+        inputEl.disabled = true;
+        sendBtn.disabled = true;
+      });
+
+      function submitGuess(guess) {
+        if (!sessionId) return;
+        socket.emit('submit_guess', { sessionId, guess });
+        // Immediately give visual feedback
+        appendPromptArea('You guessed: ' + guess);
+      }
+
+      function submitContinueChoice(choice) {
+        if (!sessionId) return;
+        socket.emit('submit_continue_choice', { sessionId, choice });
+        appendPromptArea('You chose: ' + choice);
+      }
+
+      function appendPromptArea(text) {
+        const d = document.createElement('div');
+        d.textContent = text;
+        promptArea.appendChild(d);
+      }
+
+      // Send message
+      sendBtn.onclick = () => {
+        const text = inputEl.value.trim();
+        if (!text || !sessionId) return;
+        socket.emit('send_message', { sessionId, text });
+        inputEl.value = '';
+      };
+
+      // Enable sending with Enter
+      inputEl.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          sendBtn.click();
+        }
+      });
+
+      // Show simple connection status
+      socket.on('connect', () => {
+        statusEl.textContent = 'Connected. Waiting to be paired...';
+      });
+
+      socket.on('disconnect', () => {
+        statusEl.textContent = 'Disconnected from server.';
+        inputEl.disabled = true;
+        sendBtn.disabled = true;
+      });
+    </script>
+  </body>
+</html>
