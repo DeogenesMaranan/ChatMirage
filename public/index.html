@@ -1,12 +1,3 @@
-<!-- public/index.html -->
-<!--
-  Single-page frontend for anonymous 1-to-1 chat.
-  - Connects to Socket.io backend
-  - Displays messages
-  - Sends messages
-  - Shows Turing prompt every 10 messages with guess buttons
-  - If guess correct, shows continue/end buttons
--->
 <!doctype html>
 <html>
   <head>
@@ -38,13 +29,13 @@
       <div id="controls">
         <input id="messageInput" placeholder="Type a message" style="flex:1" />
         <button id="sendBtn">Send</button>
+        <button id="skipBtn">Skip</button>
       </div>
       <div id="promptArea"></div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-      // Landing page logic
       const landing = document.getElementById('landing');
       const chatUI = document.getElementById('chatUI');
       const startBtn = document.getElementById('startBtn');
@@ -92,10 +83,20 @@
         localStorage.removeItem('chatmirage_session');
       }
 
+      function getUserId() {
+        let userId = localStorage.getItem('chatmirage_userid');
+        if (!userId) {
+          userId = 'u_' + Math.random().toString(36).substr(2, 12);
+          localStorage.setItem('chatmirage_userid', userId);
+        }
+        return userId;
+      }
+
       function connectSocket() {
         const urlParams = new URLSearchParams(location.search);
         const forced = urlParams.get('force');
-        socket = forced ? io({ auth: { forcePartner: forced } }) : io();
+        const userId = getUserId();
+        socket = forced ? io({ auth: { forcePartner: forced, userId } }) : io({ auth: { userId } });
 
         socket.on('connect', () => {
           if (!sessionId) {
@@ -105,16 +106,39 @@
           }
         });
 
+        let myRole = null;
         socket.on('paired', (data) => {
           sessionId = data.sessionId;
           partnerType = data.partnerType;
           saveSession();
           statusEl.textContent = `Paired — Partner: ${data.partnerType} (${data.partnerId}) — Session ${sessionId}`;
           appendPromptArea('Paired! Say hi.');
+          
+          myRole = partnerType === 'ai' ? 'human' : 'human'; // always human for now
+          socket.emit('request_history', { sessionId });
         });
 
         socket.on('chat_message', (data) => {
           addMessage(data.from, data.text);
+        });
+
+        socket.on('chat_history', (data) => {
+          messagesEl.innerHTML = '';
+          const userId = getUserId();
+          if (data && Array.isArray(data.chatHistory)) {
+            data.chatHistory.forEach(msg => {
+              
+              if (msg.userId && msg.userId === userId) {
+                addMessage('me', msg.text);
+              } else if (msg.from === 'ai') {
+                addMessage('partner', msg.text);
+              } else if (msg.from === 'human' && myRole === 'human') {
+                addMessage('me', msg.text);
+              } else {
+                addMessage('partner', msg.text);
+              }
+            });
+          }
         });
 
         socket.on('turing_prompt', (data) => {
@@ -194,11 +218,23 @@
           promptArea.appendChild(d);
         }
 
+
         sendBtn.onclick = () => {
           const text = inputEl.value.trim();
           if (!text || !sessionId) return;
           socket.emit('send_message', { sessionId, text });
           inputEl.value = '';
+        };
+
+        // Skip button logic
+        const skipBtn = document.getElementById('skipBtn');
+        skipBtn.onclick = () => {
+          socket.emit('skip_partner');
+          statusEl.textContent = 'Searching for new partner...';
+          messagesEl.innerHTML = '';
+          promptArea.innerHTML = '';
+          inputEl.disabled = false;
+          sendBtn.disabled = false;
         };
 
         inputEl.addEventListener('keydown', (ev) => {
