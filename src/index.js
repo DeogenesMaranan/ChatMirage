@@ -1,3 +1,5 @@
+try { require('dotenv').config(); } catch (e) { }
+
 const { createServer } = require('./app');
 const sessionManager = require('./sessionManager');
 
