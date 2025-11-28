@@ -10,38 +10,22 @@ const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gem
 async function aiRespond(chatHistory) {
   const lastUserMsg = chatHistory.length > 0 ? chatHistory[chatHistory.length - 1].text : '';
 
-  function isGibberish(text) {
-    const vowelCount = (text.match(/[aeiouAEIOU]/g) || []).length;
-    const alphaCount = (text.match(/[a-zA-Z]/g) || []).length;
-    const nonAlphaCount = (text.match(/[^a-zA-Z0-9\s]/g) || []).length;
-    if (text.length > 0 && (vowelCount < 2 || alphaCount < text.length * 0.3 || nonAlphaCount > text.length * 0.5)) {
-      return true;
-    }
-    return false;
-  }
+  const instruction = `
+  You are a participant in a Turing Test conversation. Respond as a human would, mirroring the user's language, tone, and level of formality. 
+  Keep replies brief (1–2 sentences). Do not use emojis. 
+  Use natural, casual, and occasionally imperfect phrasing (light slang, small typos, hesitant wording when appropriate).
+  Always respond in the same language the user uses. 
+  If the user's latest message is gibberish, reply with gibberish as well.
+  Never state or imply that you are an AI, model, or machine—stay fully in-character as a human conversational partner.
+  Here is the conversation so far:
+  `;
 
-  function detectLanguage(text) {
-    if (/^[\u4e00-\u9fff]+$/.test(text)) return 'zh'; // Chinese
-    if (/^[а-яА-ЯёЁ]+$/.test(text)) return 'ru'; // Russian
-    if (/^[a-zA-Z\s]+$/.test(text)) return 'en'; // English
-    return 'auto';
-  }
+  let transcript = chatHistory
+    .map(msg => `${msg.from === 'ai' ? 'Partner' : 'You'}: ${msg.text}`)
+    .join('\n');
 
-  // If gibberish, reply with gibberish
-  if (isGibberish(lastUserMsg)) {
-    const shuffled = lastUserMsg.split('').sort(() => Math.random() - 0.5).join('');
-    const randomChars = Math.random().toString(36).substring(2, 6);
-    return `${shuffled}${randomChars}`;
-  }
+  const prompt = `${instruction}\n${transcript}\nPartner:`;
 
-  // Otherwise, reply in user's language and humanlike style
-  const language = detectLanguage(lastUserMsg);
-  const instruction =
-    "You are participating in a Turing Test game. Reply as humanlike as possible, matching the user's language and style. Keep your responses concise (1-2 sentences). Do not use emojis. If the user writes in English, reply in English. If in another language, reply in that language. Use natural, casual, and sometimes imperfect phrasing. Never reveal you are an AI.\n";
-
-  // Build a chat transcript for context
-  let transcript = chatHistory.map(msg => `${msg.from === 'ai' ? 'Partner' : 'You'}: ${msg.text}`).join('\n');
-  const prompt = instruction + transcript + '\nPartner:';
   const messages = [
     {
       role: 'user',
