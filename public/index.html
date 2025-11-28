@@ -66,25 +66,49 @@
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
+
       function showChatUI() {
         landing.style.display = 'none';
         chatUI.style.display = '';
       }
 
-      startBtn.onclick = () => {
-        showChatUI();
-        statusEl.textContent = 'Connecting...';
+      function saveSession() {
+        localStorage.setItem('chatmirage_session', JSON.stringify({ sessionId, partnerType }));
+      }
+
+      function loadSession() {
+        try {
+          const data = JSON.parse(localStorage.getItem('chatmirage_session'));
+          if (data && data.sessionId) {
+            sessionId = data.sessionId;
+            partnerType = data.partnerType;
+            return true;
+          }
+        } catch {}
+        return false;
+      }
+
+      function clearSession() {
+        localStorage.removeItem('chatmirage_session');
+      }
+
+      function connectSocket() {
         const urlParams = new URLSearchParams(location.search);
         const forced = urlParams.get('force');
         socket = forced ? io({ auth: { forcePartner: forced } }) : io();
 
         socket.on('connect', () => {
-          statusEl.textContent = 'Connected. Searching for partner...';
+          if (!sessionId) {
+            statusEl.textContent = 'Connected. Searching for partner...';
+          } else {
+            statusEl.textContent = `Reconnected to session ${sessionId}`;
+          }
         });
 
         socket.on('paired', (data) => {
           sessionId = data.sessionId;
           partnerType = data.partnerType;
+          saveSession();
           statusEl.textContent = `Paired — Partner: ${data.partnerType} (${data.partnerId}) — Session ${sessionId}`;
           appendPromptArea('Paired! Say hi.');
         });
@@ -141,6 +165,7 @@
           statusEl.textContent = 'Chat ended. Reload page to try again.';
           inputEl.disabled = true;
           sendBtn.disabled = true;
+          clearSession();
         });
 
         socket.on('partner_disconnected', (data) => {
@@ -148,6 +173,7 @@
           statusEl.textContent = 'Partner disconnected. Chat ended.';
           inputEl.disabled = true;
           sendBtn.disabled = true;
+          clearSession();
         });
 
         function submitGuess(guess) {
@@ -180,7 +206,18 @@
             sendBtn.click();
           }
         });
-      };
+      }
+
+      // On page load, check for session and restore if possible
+      if (loadSession()) {
+        showChatUI();
+        connectSocket();
+      } else {
+        startBtn.onclick = () => {
+          showChatUI();
+          connectSocket();
+        };
+      }
     </script>
   </body>
 </html>
