@@ -1,13 +1,7 @@
-// src/sessionManager.js
-// Manages waiting queue, sessions, pairing logic, message relay, Turing prompt,
-// guess handling, continue/end logic, and disconnects. Keeps logic modular
-// so `src/index.js` only wires up the pieces.
-
 const { aiRespond } = require('./ai');
 
-// In-memory structures for waiting users and active sessions.
-const waitingQueue = []; // array of sockets waiting to be paired
-const sessions = new Map(); // sessionId -> session object
+const waitingQueue = [];
+const sessions = new Map();
 
 let nextSessionId = 1;
 
@@ -15,10 +9,11 @@ function createSession(participants) {
   const sessionId = String(nextSessionId++);
   const session = {
     id: sessionId,
-    participants: participants, // array of socket objects or {type:'ai'}
+    participants: participants,
     messageCount: 0,
-    awaitingGuesses: new Map(), // socket.id -> {guessed: bool, correct: bool}
-    awaitingContinue: new Map(), // socket.id -> boolean|null
+    chatHistory: [],
+    awaitingGuesses: new Map(),
+    awaitingContinue: new Map(),
     closed: false
   };
   sessions.set(sessionId, session);
@@ -40,33 +35,38 @@ function tryPair(socket) {
     return;
   }
 
-  // 50% chance to pair with human if someone is waiting, otherwise AI.
-  const hasWaiting = waitingQueue.length > 0;
-  const chooseHuman = hasWaiting && Math.random() < 0.5;
-
-  if (chooseHuman) {
-    const other = waitingQueue.shift();
-    if (!other || !other.connected) {
-      pairWithAI(socket);
+  if (waitingQueue.length >= 2) {
+    const idx = waitingQueue.indexOf(socket);
+    if (idx !== -1) waitingQueue.splice(idx, 1);
+    let other = null;
+    for (let i = 0; i < waitingQueue.length; i++) {
+      if (waitingQueue[i] && waitingQueue[i].connected) {
+        other = waitingQueue.splice(i, 1)[0];
+        break;
+      }
+    }
+    if (other) {
+      const session = createSession([socket, other]);
+      socket.join(session.id);
+      other.join(session.id);
+      socket.emit('paired', { sessionId: session.id, partnerType: 'human', partnerId: other.id });
+      other.emit('paired', { sessionId: session.id, partnerType: 'human', partnerId: socket.id });
       return;
     }
-
-    const session = createSession([socket, other]);
-    socket.join(session.id);
-    other.join(session.id);
-    socket.emit('paired', { sessionId: session.id, partnerType: 'human', partnerId: other.id });
-    other.emit('paired', { sessionId: session.id, partnerType: 'human', partnerId: socket.id });
-  } else {
-    pairWithAI(socket);
   }
+  setTimeout(() => {
+    if (!sessions.has(socket.sessionId)) {
+      pairWithAI(socket);
+    }
+  }, 5000);
 }
 
 async function handleMessage(session, fromSocket, text) {
   if (session.closed) return;
 
   session.messageCount += 1;
+  session.chatHistory.push({ from: fromSocket.type === 'ai' ? 'ai' : 'human', text });
 
-  // Acknowledge to sender and forward to human partner if present.
   fromSocket.emit('chat_message', { from: 'me', text });
 
   for (const p of session.participants) {
@@ -75,13 +75,13 @@ async function handleMessage(session, fromSocket, text) {
     p.emit('chat_message', { from: 'partner', text });
   }
 
-  // If AI session and human sent message, generate AI reply
   const isAiSession = session.participants.some((p) => p.type === 'ai');
   if (isAiSession) {
     const humanSocket = session.participants.find((p) => p.type !== 'ai');
     if (fromSocket === humanSocket) {
-      const reply = await aiRespond(text);
+     const reply = await aiRespond(session.chatHistory);
       session.messageCount += 1;
+      session.chatHistory.push({ from: 'ai', text: reply });
       humanSocket.emit('chat_message', { from: 'partner', text: reply });
     }
   }
@@ -119,32 +119,22 @@ function handleGuess(session, socket, guess) {
   session.awaitingGuesses.set(socket.id, { guessed: true, correct });
   socket.emit('guess_result', { correct });
 
-  if (!correct) {
-    endSession(session, `incorrect_guess_by_${socket.id}`);
+  if (!partnerIsHuman && guess === 'AI') {
+    endSession(session, `correct_ai_guess_by_${socket.id}`);
     return;
   }
 
-  const isAiSession = session.participants.some((p) => p.type === 'ai');
-  if (isAiSession) {
-    session.awaitingContinue.set(socket.id, null);
-    socket.emit('post_guess_options', { message: 'You guessed correctly. Continue or end chat?' });
+  if (partnerIsHuman) {
+    for (const p of session.participants) {
+      if (p.type !== 'ai' && p.connected) {
+        session.awaitingContinue.set(p.id, null);
+        p.emit('post_guess_options', { message: 'Do you want to continue or end the chat?' });
+      }
+    }
   } else {
-    let allGuessedAndCorrect = true;
-    for (const [id, info] of session.awaitingGuesses.entries()) {
-      if (!info.guessed || !info.correct) {
-        allGuessedAndCorrect = false;
-        break;
-      }
-    }
-
-    if (allGuessedAndCorrect) {
-      for (const p of session.participants) {
-        if (p.type !== 'ai' && p.connected) {
-          session.awaitingContinue.set(p.id, null);
-          p.emit('post_guess_options', { message: 'Both guessed correctly. Continue or end chat?' });
-        }
-      }
-    }
+    // AI session, only prompt the guesser
+    session.awaitingContinue.set(socket.id, null);
+    socket.emit('post_guess_options', { message: 'Do you want to continue or end the chat?' });
   }
 }
 
