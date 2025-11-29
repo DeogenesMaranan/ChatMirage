@@ -4,291 +4,67 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Anonymous Chat (Human or AI)</title>
-    <style>
-      body { font-family: Arial, sans-serif; max-width: 720px; margin: 24px auto; }
-      #messages { border: 1px solid #ddd; height: 360px; padding: 12px; overflow-y: auto; background: #fafafa; }
-      .msg { margin: 6px 0; }
-      .me { color: #0b5394; }
-      .partner { color: #0b7a3f; }
-      #controls { margin-top: 12px; display:flex; gap:8px; }
-      #promptArea { margin-top: 12px; }
-      button { padding: 8px 12px; }
-    </style>
+    <script src="https://cdn.tailwindcss.com"></script>
   </head>
-  <body>
-    <h2>Anonymous Chat — Human or AI?</h2>
+  <body class="bg-gray-50 min-h-screen flex items-center justify-center font-sans">
+    <div class="w-full max-w-3xl mx-auto p-6">
+      <div id="container" class="bg-white shadow-lg rounded-xl overflow-hidden">
+        <header class="flex items-center justify-between px-6 py-4 border-b">
+          <div>
+            <h2 class="text-lg font-semibold">Anonymous Chat — Human or AI?</h2>
+            <div id="status" class="text-xs text-gray-500">Not connected</div>
+          </div>
+          <div id="toolbar" class="flex items-center gap-2">
+            <button id="debugToggle" class="text-sm px-3 py-1 rounded bg-gray-100 hover:bg-gray-200">Debug</button>
+          </div>
+        </header>
 
-    <div id="landing">
-      <p>Welcome to ChatMirage! Click below to start chatting anonymously with a human or AI.</p>
-      <button id="startBtn">Start Chat</button>
+        <main class="p-6">
+          <section id="landing" class="text-center space-y-4">
+            <p class="text-gray-600">Welcome to ChatMirage! Start chatting anonymously — partner may be a human or an AI. (Chat contents are hidden by default; debug shows IDs.)</p>
+            <div class="flex items-center justify-center gap-3">
+              <button id="startBtn" class="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700">Start Chat</button>
+              <button id="demoBtn" class="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50">Demo (force AI)</button>
+            </div>
+          </section>
+
+          <section id="chatUI" class="hidden flex-col gap-4">
+            <div id="typingIndicator" class="text-xs text-gray-500"></div>
+            <div id="messages" aria-live="polite" class="flex flex-col gap-3 overflow-auto h-72 p-3 bg-gray-50 rounded"></div>
+
+            <div id="promptArea" class="mt-2"></div>
+
+            <div id="controls" class="mt-4 flex gap-2 items-center">
+              <input id="messageInput" placeholder="Type a message" class="flex-1 px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200" />
+              <button id="sendBtn" class="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700">Send</button>
+              <button id="skipBtn" class="px-3 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50">Skip</button>
+            </div>
+          </section>
+
+          <div id="debugArea" aria-hidden="true" class="mt-4 hidden bg-gray-100 p-3 rounded text-sm text-gray-700"></div>
+        </main>
+      </div>
     </div>
 
-    <div id="chatUI" style="display:none">
-      <div id="status">Not connected</div>
-      <div id="typingIndicator" style="color:#888;margin-top:6px;height:18px"></div>
-      <div id="messages"></div>
-      <div id="controls">
-        <input id="messageInput" placeholder="Type a message" style="flex:1" />
-        <button id="sendBtn">Send</button>
-        <button id="skipBtn">Skip</button>
+    <div id="overlay" class="fixed inset-0 bg-black/40 hidden items-center justify-center">
+      <div id="panel" class="bg-white rounded-lg px-6 py-5 flex items-center gap-4 shadow">
+        <div id="spinner" class="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        <div id="overlayText" class="text-gray-700">Searching for partner...</div>
       </div>
-      <div id="promptArea"></div>
+    </div>
+
+    <div id="modalBackdrop" class="fixed inset-0 hidden items-center justify-center bg-black/40">
+      <div id="modal" class="bg-white rounded-lg w-full max-w-md p-5 shadow-lg">
+        <h3 id="modalTitle" class="text-lg font-semibold">Chat status</h3>
+        <p id="modalMessage" class="mt-2 text-gray-600">Partner disconnected</p>
+        <div id="row" class="mt-4 flex justify-end gap-2">
+          <button id="modalClose" class="px-3 py-1 rounded-md bg-gray-100 hover:bg-gray-200">Close</button>
+          <button id="modalSkip" class="px-3 py-1 rounded-md bg-blue-600 text-white hover:bg-blue-700">Skip & Find New Partner</button>
+        </div>
+      </div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script>
-      const landing = document.getElementById('landing');
-      const chatUI = document.getElementById('chatUI');
-      const startBtn = document.getElementById('startBtn');
-
-      let socket = null;
-      let sessionId = null;
-      let partnerType = null;
-      const statusEl = document.getElementById('status');
-      const messagesEl = document.getElementById('messages');
-      const typingIndicator = document.getElementById('typingIndicator');
-      const inputEl = document.getElementById('messageInput');
-      const sendBtn = document.getElementById('sendBtn');
-      const promptArea = document.getElementById('promptArea');
-
-      function addMessage(from, text) {
-        const div = document.createElement('div');
-        div.className = 'msg ' + (from === 'me' ? 'me' : 'partner');
-        div.textContent = (from === 'me' ? 'Me: ' : 'Partner: ') + text;
-        messagesEl.appendChild(div);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-
-
-      function showChatUI() {
-        landing.style.display = 'none';
-        chatUI.style.display = '';
-      }
-
-      function saveSession() {
-        localStorage.setItem('chatmirage_session', JSON.stringify({ sessionId, partnerType }));
-      }
-
-      function loadSession() {
-        try {
-          const data = JSON.parse(localStorage.getItem('chatmirage_session'));
-          if (data && data.sessionId) {
-            sessionId = data.sessionId;
-            partnerType = data.partnerType;
-            return true;
-          }
-        } catch {}
-        return false;
-      }
-
-      function clearSession() {
-        localStorage.removeItem('chatmirage_session');
-      }
-
-      function getUserId() {
-        let userId = localStorage.getItem('chatmirage_userid');
-        if (!userId) {
-          userId = 'u_' + Math.random().toString(36).substr(2, 12);
-          localStorage.setItem('chatmirage_userid', userId);
-        }
-        return userId;
-      }
-
-      function connectSocket() {
-        const urlParams = new URLSearchParams(location.search);
-        const forced = urlParams.get('force');
-        const userId = getUserId();
-        socket = forced ? io({ auth: { forcePartner: forced, userId } }) : io({ auth: { userId } });
-
-        socket.on('connect', () => {
-          if (!sessionId) {
-            statusEl.textContent = 'Connected. Searching for partner...';
-          } else {
-            statusEl.textContent = `Reconnected to session ${sessionId}`;
-          }
-        });
-
-        let myRole = null;
-        socket.on('paired', (data) => {
-          sessionId = data.sessionId;
-          partnerType = data.partnerType;
-          saveSession();
-          statusEl.textContent = `Paired — Partner: ${data.partnerType} (${data.partnerId}) — Session ${sessionId}`;
-          appendPromptArea('Paired! Say hi.');
-          
-          myRole = partnerType === 'ai' ? 'human' : 'human';
-          socket.emit('request_history', { sessionId });
-        });
-
-        socket.on('chat_message', (data) => {
-          addMessage(data.from, data.text);
-        });
-
-        socket.on('chat_history', (data) => {
-          messagesEl.innerHTML = '';
-          const userId = getUserId();
-          if (data && Array.isArray(data.chatHistory)) {
-            data.chatHistory.forEach(msg => {
-              
-              if (msg.userId && msg.userId === userId) {
-                addMessage('me', msg.text);
-              } else if (msg.from === 'ai') {
-                addMessage('partner', msg.text);
-              } else if (msg.from === 'human' && myRole === 'human') {
-                addMessage('me', msg.text);
-              } else {
-                addMessage('partner', msg.text);
-              }
-            });
-          }
-        });
-
-        socket.on('partner_typing', (data) => {
-          showTyping(true);
-        });
-
-        socket.on('partner_stop_typing', (data) => {
-          showTyping(false);
-        });
-
-        socket.on('turing_prompt', (data) => {
-          promptArea.innerHTML = '';
-          const p = document.createElement('div');
-          p.textContent = data.prompt;
-          promptArea.appendChild(p);
-          const humanBtn = document.createElement('button');
-          humanBtn.textContent = 'Human';
-          humanBtn.onclick = () => submitGuess('Human');
-          promptArea.appendChild(humanBtn);
-          const aiBtn = document.createElement('button');
-          aiBtn.textContent = 'AI';
-          aiBtn.onclick = () => submitGuess('AI');
-          promptArea.appendChild(aiBtn);
-        });
-
-        socket.on('guess_result', (data) => {
-          if (data.correct) {
-            appendPromptArea('Your guess was correct. Waiting for continue/end options...');
-          } else {
-            appendPromptArea('Incorrect guess.');
-          }
-        });
-
-        socket.on('post_guess_options', (data) => {
-          promptArea.innerHTML = '';
-          const p = document.createElement('div');
-          p.textContent = data.message;
-          promptArea.appendChild(p);
-          const cont = document.createElement('button');
-          cont.textContent = 'Continue';
-          cont.onclick = () => submitContinueChoice('continue');
-          promptArea.appendChild(cont);
-          const end = document.createElement('button');
-          end.textContent = 'End Chat';
-          end.onclick = () => submitContinueChoice('end');
-          promptArea.appendChild(end);
-        });
-
-        socket.on('resume_chat', (data) => {
-          appendPromptArea(data.message);
-          setTimeout(() => (promptArea.innerHTML = ''), 1500);
-        });
-
-        socket.on('chat_ended', (data) => {
-          appendPromptArea('Chat ended: ' + (data.reason || 'unknown'));
-          statusEl.textContent = 'Chat ended. Reload page to try again.';
-          inputEl.disabled = true;
-          sendBtn.disabled = true;
-          clearSession();
-        });
-
-        socket.on('partner_disconnected', (data) => {
-          appendPromptArea(data.message || 'Partner disconnected');
-          statusEl.textContent = 'Partner disconnected. Chat ended.';
-          inputEl.disabled = true;
-          sendBtn.disabled = true;
-          clearSession();
-        });
-
-        function submitGuess(guess) {
-          if (!sessionId) return;
-          socket.emit('submit_guess', { sessionId, guess });
-          appendPromptArea('You guessed: ' + guess);
-        }
-
-        function submitContinueChoice(choice) {
-          if (!sessionId) return;
-          socket.emit('submit_continue_choice', { sessionId, choice });
-          appendPromptArea('You chose: ' + choice);
-        }
-
-        function appendPromptArea(text) {
-          const d = document.createElement('div');
-          d.textContent = text;
-          promptArea.appendChild(d);
-        }
-
-        let typing = false;
-        let typingTimeout = null;
-        const TYPING_DELAY = 1400;
-
-        function showTyping(flag) {
-          if (!typingIndicator) return;
-          typingIndicator.textContent = flag ? 'Partner is typing...' : '';
-        }
-
-        inputEl.addEventListener('input', () => {
-          if (!socket || !sessionId) return;
-          if (!typing) {
-            typing = true;
-            socket.emit('typing', { sessionId });
-          }
-          clearTimeout(typingTimeout);
-          typingTimeout = setTimeout(() => {
-            typing = false;
-            if (socket && sessionId) socket.emit('stop_typing', { sessionId });
-          }, TYPING_DELAY);
-        });
-
-
-        sendBtn.onclick = () => {
-          const text = inputEl.value.trim();
-          if (!text || !sessionId) return;
-          socket.emit('send_message', { sessionId, text });
-          
-          if (socket && sessionId) socket.emit('stop_typing', { sessionId });
-          typing = false;
-          clearTimeout(typingTimeout);
-          inputEl.value = '';
-        };
-
-        const skipBtn = document.getElementById('skipBtn');
-        skipBtn.onclick = () => {
-          if (socket && sessionId) socket.emit('stop_typing', { sessionId });
-          socket.emit('skip_partner');
-          statusEl.textContent = 'Searching for new partner...';
-          messagesEl.innerHTML = '';
-          promptArea.innerHTML = '';
-          inputEl.disabled = false;
-          sendBtn.disabled = false;
-        };
-
-        inputEl.addEventListener('keydown', (ev) => {
-          if (ev.key === 'Enter') {
-            sendBtn.click();
-          }
-        });
-      }
-
-      if (loadSession()) {
-        showChatUI();
-        connectSocket();
-      } else {
-        startBtn.onclick = () => {
-          showChatUI();
-          connectSocket();
-        };
-      }
-    </script>
+    <script src="/app.js"></script>
   </body>
 </html>
