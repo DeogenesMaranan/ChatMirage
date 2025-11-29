@@ -39,10 +39,10 @@ function addMessage(from, text) {
 
   if (from === 'me') {
     wrapper.classList.add('justify-end');
-    bubble.classList.add('bg-blue-600', 'text-white');
+    bubble.classList.add('bg-purple-600', 'text-white');
   } else {
     wrapper.classList.add('justify-start');
-    bubble.classList.add('bg-gray-100', 'text-gray-900');
+    bubble.classList.add('bg-gray-800', 'text-white', 'border', 'border-purple-500/30');
   }
 
   wrapper.appendChild(bubble);
@@ -82,18 +82,24 @@ async function fetchAndShowStats() {
     if (!statsBox) return;
     statsBox.classList.remove('hidden');
     statsSummary.textContent = total === 0 ? 'No community guesses yet.' : `Total community guesses: ${total}`;
+    
     const friendly = [
-      { k: 'TP', label: "People guessed 'AI' and were right" , v: TP },
+      { k: 'TP', label: "People guessed 'AI' and were right", v: TP },
       { k: 'FP', label: "People guessed 'AI' but were wrong (it was a human)", v: FP },
       { k: 'FN', label: "People guessed 'Human' but were wrong (it was an AI)", v: FN },
       { k: 'TN', label: "People guessed 'Human' and were right", v: TN },
     ];
-    statsList.innerHTML = '';
+    
+    const tbody = statsList.querySelector('tbody');
+    tbody.innerHTML = '';
     friendly.forEach(item => {
-      const li = document.createElement('li');
-      li.className = 'flex items-center justify-between';
-      li.innerHTML = `<span>${item.label}</span><strong class="ml-4">${item.v}</strong>`;
-      statsList.appendChild(li);
+      const tr = document.createElement('tr');
+      tr.className = 'border-b border-purple-500/10 hover:bg-purple-500/5 transition-colors';
+      tr.innerHTML = `
+        <td class="py-2 px-3">${item.label}</td>
+        <td class="py-2 px-3 text-right font-semibold text-purple-100">${item.v}</td>
+      `;
+      tbody.appendChild(tr);
     });
   } catch (e) {
     if (statsSummary) statsSummary.textContent = 'Failed to load community summary.';
