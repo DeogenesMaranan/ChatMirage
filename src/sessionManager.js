@@ -91,14 +91,38 @@ function init(io) {
       if (sess.partnerIsAI) {
         socket.emit('chat_message', { from: 'me', text });
         socket.emit('chat_history_update', { chatHistory: sess.chatHistory });
-        try {
-          const aiText = await aiRespond(sess.chatHistory.slice());
-          const aiMsg = { from: 'ai', text: aiText };
-          sess.chatHistory.push(aiMsg);
-          socket.emit('chat_message', { from: 'partner', text: aiText });
-        } catch (err) {
-          console.error('AI response failed', err);
-        }
+
+        sess.aiQueue = sess.aiQueue || Promise.resolve();
+        sess.aiQueue = sess.aiQueue.then(async () => {
+          try {
+            // Show AI typing while we generate a reply
+            socket.emit('partner_typing', { userId: 'ai' });
+
+            // Generate the AI text
+            const aiText = await aiRespond(sess.chatHistory.slice());
+
+            // Calculate a realistic typing duration based on message length
+            const PER_CHAR_MS = 25; // ms per character (adjust for speed)
+            const MIN_TYPING_MS = 600; // minimum typing time
+            const MAX_TYPING_MS = 4000; // cap maximum typing time
+            const typingMs = Math.min(Math.max(Math.floor(aiText.length * PER_CHAR_MS), MIN_TYPING_MS), MAX_TYPING_MS);
+
+            // Keep showing typing for the computed duration
+            await new Promise((r) => setTimeout(r, typingMs));
+
+            const aiMsg = { from: 'ai', text: aiText };
+            sess.chatHistory.push(aiMsg);
+
+            // Stop typing indicator then send the AI message
+            socket.emit('partner_stop_typing', { userId: 'ai' });
+            socket.emit('chat_message', { from: 'partner', text: aiText });
+          } catch (err) {
+            console.error('AI response failed', err);
+            try {
+              socket.emit('partner_stop_typing', { userId: 'ai' });
+            } catch (e) {}
+          }
+        });
       } else {
         sess.humanSockets.forEach((s) => {
           if (s.id === socket.id) {

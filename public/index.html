@@ -116,7 +116,7 @@
           statusEl.textContent = `Paired — Partner: ${data.partnerType} (${data.partnerId}) — Session ${sessionId}`;
           appendPromptArea('Paired! Say hi.');
           
-          myRole = partnerType === 'ai' ? 'human' : 'human'; // always human for now
+          myRole = partnerType === 'ai' ? 'human' : 'human';
           socket.emit('request_history', { sessionId });
         });
 
