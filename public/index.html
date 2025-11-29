@@ -65,25 +65,35 @@
         chatUI.style.display = '';
       }
 
-      function saveSession() {
-        localStorage.setItem('chatmirage_session', JSON.stringify({ sessionId, partnerType }));
+      function showLanding() {
+        landing.style.display = '';
+        chatUI.style.display = 'none';
       }
 
-      function loadSession() {
+      const STARTED_KEY = 'chatmirage_started';
+      const STARTED_EXPIRY_MS = 15 * 60 * 1000;
+
+      function setStarted() {
         try {
-          const data = JSON.parse(localStorage.getItem('chatmirage_session'));
-          if (data && data.sessionId) {
-            sessionId = data.sessionId;
-            partnerType = data.partnerType;
-            return true;
-          }
-        } catch {}
-        return false;
+          const payload = { startedAt: Date.now() };
+          localStorage.setItem(STARTED_KEY, JSON.stringify(payload));
+        } catch (e) {}
       }
 
-      function clearSession() {
-        localStorage.removeItem('chatmirage_session');
+      function clearStarted() {
+        try { localStorage.removeItem(STARTED_KEY); } catch (e) {}
       }
+
+      function isStartedValid() {
+        try {
+          const raw = localStorage.getItem(STARTED_KEY);
+          if (!raw) return false;
+          const o = JSON.parse(raw);
+          if (!o || !o.startedAt) return false;
+          return (Date.now() - o.startedAt) <= STARTED_EXPIRY_MS;
+        } catch (e) { return false; }
+      }
+
 
       function getUserId() {
         let userId = localStorage.getItem('chatmirage_userid');
@@ -112,7 +122,6 @@
         socket.on('paired', (data) => {
           sessionId = data.sessionId;
           partnerType = data.partnerType;
-          saveSession();
           statusEl.textContent = `Paired — Partner: ${data.partnerType} (${data.partnerId}) — Session ${sessionId}`;
           appendPromptArea('Paired! Say hi.');
           
@@ -199,7 +208,8 @@
           statusEl.textContent = 'Chat ended. Reload page to try again.';
           inputEl.disabled = true;
           sendBtn.disabled = true;
-          clearSession();
+          clearStarted();
+          showLanding();
         });
 
         socket.on('partner_disconnected', (data) => {
@@ -207,7 +217,8 @@
           statusEl.textContent = 'Partner disconnected. Chat ended.';
           inputEl.disabled = true;
           sendBtn.disabled = true;
-          clearSession();
+          clearStarted();
+          showLanding();
         });
 
         function submitGuess(guess) {
@@ -280,11 +291,13 @@
         });
       }
 
-      if (loadSession()) {
+ 
+      if (isStartedValid()) {
         showChatUI();
         connectSocket();
       } else {
         startBtn.onclick = () => {
+          setStarted();
           showChatUI();
           connectSocket();
         };
