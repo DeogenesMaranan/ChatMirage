@@ -23,6 +23,10 @@ const modalRow = document.getElementById('row');
 let customModalButtons = [];
 const debugToggle = document.getElementById('debugToggle');
 const debugArea = document.getElementById('debugArea');
+const homeBtn = document.getElementById('homeBtn');
+const statsBox = document.getElementById('statsBox');
+const statsSummary = document.getElementById('statsSummary');
+const statsList = document.getElementById('statsList');
 
 function addMessage(from, text) {
   const wrapper = document.createElement('div');
@@ -52,6 +56,49 @@ const recentSentText = { text: null, ts: 0 };
 function showChatUI() {
   landing.classList.add('hidden');
   chatUI.classList.remove('hidden');
+}
+
+function showLanding() {
+  clearSession();
+  try { if (socket && socket.disconnect) socket.disconnect(); } catch (e) {}
+  socket = null;
+  sessionId = null;
+  partnerType = null;
+
+  messagesEl.innerHTML = '';
+  promptArea.innerHTML = '';
+  landing.classList.remove('hidden');
+  chatUI.classList.add('hidden');
+  disableInputControls(true);
+  statusEl.classList.add('hidden');
+}
+
+async function fetchAndShowStats() {
+  try {
+    const res = await fetch('/api/guess-stats');
+    if (!res.ok) throw new Error('failed');
+    const data = await res.json();
+    const { total = 0, TP = 0, FP = 0, FN = 0, TN = 0 } = data;
+    if (!statsBox) return;
+    statsBox.classList.remove('hidden');
+    statsSummary.textContent = total === 0 ? 'No community guesses yet.' : `Total community guesses: ${total}`;
+    const friendly = [
+      { k: 'TP', label: "People guessed 'AI' and were right" , v: TP },
+      { k: 'FP', label: "People guessed 'AI' but were wrong (it was a human)", v: FP },
+      { k: 'FN', label: "People guessed 'Human' but were wrong (it was an AI)", v: FN },
+      { k: 'TN', label: "People guessed 'Human' and were right", v: TN },
+    ];
+    statsList.innerHTML = '';
+    friendly.forEach(item => {
+      const li = document.createElement('li');
+      li.className = 'flex items-center justify-between';
+      li.innerHTML = `<span>${item.label}</span><strong class="ml-4">${item.v}</strong>`;
+      statsList.appendChild(li);
+    });
+  } catch (e) {
+    if (statsSummary) statsSummary.textContent = 'Failed to load community summary.';
+    console.error('Failed to fetch stats', e);
+  }
 }
 
 function saveSession() {
@@ -95,7 +142,6 @@ function hideOverlay(){
 }
 
 function showModal(title, message){
-  // Cleanup any custom modal buttons and show default footer buttons
   cleanupCustomModalButtons();
   modalTitle.textContent = title || 'Notice';
   modalMessage.textContent = message || '';
@@ -379,7 +425,6 @@ modalClose.onclick = () => {
 };
 
 debugToggle.onclick = () => {
-  // Toggle debug area and show status only when debug is visible.
   const isHidden = debugArea.classList.contains('hidden') || debugArea.style.display === 'none' || debugArea.style.display === '' && debugArea.classList.contains('hidden');
   if (isHidden) {
     updateDebug();
@@ -395,6 +440,12 @@ debugToggle.onclick = () => {
   }
 };
 
+if (homeBtn) {
+  homeBtn.onclick = () => {
+    showLanding();
+  };
+}
+
 function updateDebug(){
   debugArea.textContent = JSON.stringify({ userId: getUserId(), sessionId, partnerType }, null, 2);
 }
@@ -405,4 +456,6 @@ if (loadSession()) {
 } else {
   startBtn.onclick = () => { showChatUI(); connectSocket(); };
   demoBtn.onclick = () => { window.__forcePartner = 'ai'; showChatUI(); connectSocket(); };
+  // Load community stats on the landing page
+  fetchAndShowStats();
 }

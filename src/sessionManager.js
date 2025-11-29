@@ -1,6 +1,48 @@
 const { aiRespond } = require('./ai');
 
 const { randomBytes } = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const GUESSES_FILE = path.join(DATA_DIR, 'guesses.json');
+let guessStore = [];
+
+function ensureDataDir() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch (e) {
+    console.error('Failed to ensure data directory', e);
+  }
+}
+
+function loadGuessStore() {
+  try {
+    ensureDataDir();
+    if (fs.existsSync(GUESSES_FILE)) {
+      const raw = fs.readFileSync(GUESSES_FILE, 'utf8');
+      guessStore = JSON.parse(raw || '[]');
+    } else {
+      guessStore = [];
+      fs.writeFileSync(GUESSES_FILE, JSON.stringify(guessStore, null, 2));
+    }
+  } catch (e) {
+    console.error('Failed to load guess store', e);
+    guessStore = [];
+  }
+}
+
+function persistGuessRecord(record) {
+  try {
+    guessStore.push(record);
+    // write asynchronously but don't await to avoid delaying socket handler
+    fs.writeFile(GUESSES_FILE, JSON.stringify(guessStore, null, 2), (err) => {
+      if (err) console.error('Failed to persist guess record', err);
+    });
+  } catch (e) {
+    console.error('Failed to persist guess record', e);
+  }
+}
 
 const DEFAULT_HUMAN_MESSAGE_THRESHOLD = 5;
 const DEFAULT_MESSAGE_THRESHOLD = 10;
@@ -25,6 +67,8 @@ function makeSessionId() {
 
 function init(io) {
   io.on('connection', (socket) => {
+    // lazy load guess store once on first connection
+    if (guessStore.length === 0) loadGuessStore();
     const auth = socket.handshake && socket.handshake.auth ? socket.handshake.auth : {};
     const userId = auth.userId || ('u_' + socket.id);
     const forced = auth.forcePartner || null;
@@ -199,7 +243,26 @@ function init(io) {
       const guessedAI = guess === 'ai' || guess === 'a.i.' || guess === 'a i';
       const correct = (guessedAI && actualIsAI) || (!guessedAI && !actualIsAI);
 
+      // Record the guess in guessHistory and update confusion matrix
+      sess.guessHistory = sess.guessHistory || [];
+      const guessRecord = { ts: Date.now(), socketId: socket.id, guessedAI: !!guessedAI, actualIsAI: !!actualIsAI, correct: !!correct };
+      sess.guessHistory.push(guessRecord);
+
+      // Ensure confusion object exists
+      sess.confusion = sess.confusion || { TP: 0, FP: 0, FN: 0, TN: 0 };
+      if (guessedAI && actualIsAI) sess.confusion.TP += 1;
+      else if (guessedAI && !actualIsAI) sess.confusion.FP += 1;
+      else if (!guessedAI && actualIsAI) sess.confusion.FN += 1;
+      else sess.confusion.TN += 1;
+
+      // Store pending guess (still defer revealing correctness until user chooses end)
       sess.pendingGuess = { socketId: socket.id, correct, guessedAI };
+
+      // Emit updated stats to participants (helps debug / UI display)
+      try { sess.humanSockets.forEach(s => s.emit('guess_stats', { confusion: sess.confusion })); } catch (e) {}
+      // Persist guess record to JSON store (non-blocking write)
+      try { persistGuessRecord(Object.assign({ sessionId: sid }, guessRecord)); } catch (e) { console.error('persist failed', e); }
+
       socket.emit('post_guess_options', { message: 'Would you like to continue chatting or end the chat? Choose Continue to keep chatting or End Chat to finish.' });
     });
 
@@ -268,6 +331,10 @@ function pairForSocket(socket, forced, io) {
       humanSockets: [socket, other.socket],
       chatHistory: [],
       prompted: false,
+      // confusion matrix for guesses: TP, FP, FN, TN
+      confusion: { TP: 0, FP: 0, FN: 0, TN: 0 },
+      // history of guesses for auditing
+      guessHistory: [],
     };
     sessions.set(sid, sess);
     socketToSession.set(socket.id, sid);
@@ -299,6 +366,8 @@ function pairWithAI(socket, io) {
     humanSockets: [socket],
     chatHistory: [],
     prompted: false,
+    confusion: { TP: 0, FP: 0, FN: 0, TN: 0 },
+    guessHistory: [],
   };
   sessions.set(sid, sess);
   socketToSession.set(socket.id, sid);
