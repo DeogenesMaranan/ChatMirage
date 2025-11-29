@@ -285,8 +285,8 @@ function connectSocket(){
 
   socket.on('turing_prompt', (data) => {
     showCustomModal('Turing Test', data.prompt, [
-      { text: 'Human', className: 'px-3 py-2 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-200', onclick: () => { submitGuess('Human'); } },
-      { text: 'AI', className: 'px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200', onclick: () => { submitGuess('AI'); } }
+      { text: 'Human', className: 'px-3 py-2 rounded-md text-white bg-gray-800 hover:bg-gray-700 border border-purple-500/50', onclick: () => { submitGuess('Human'); } },
+      { text: 'AI', className: 'px-3 py-2 rounded-md bg-purple-600 text-white hover:bg-purple-700 transition-colors shadow-lg shadow-purple-900/50', onclick: () => { submitGuess('AI'); } }
     ]);
   });
 
@@ -297,8 +297,8 @@ function connectSocket(){
 
   socket.on('post_guess_options', (data) => {
     showCustomModal('Continue or End', data.message, [
-      { text: 'Continue', className: 'px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200', onclick: () => { submitContinueChoice('continue'); } },
-      { text: 'End Chat', className: 'px-3 py-2 rounded-md border border-red-300 text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-200', onclick: () => { submitContinueChoice('end'); } }
+      { text: 'Continue', className: 'px-3 py-2 rounded-md text-white bg-gray-800 hover:bg-gray-700 border border-purple-500/50', onclick: () => { submitContinueChoice('continue'); } },
+      { text: 'End Chat', className: 'px-3 py-2 rounded-md bg-purple-600 text-white hover:bg-purple-700 transition-colors shadow-lg shadow-purple-900/50', onclick: () => { submitContinueChoice('end'); } }
     ]);
   });
 
@@ -353,14 +353,14 @@ function showTyping(flag) {
     wrapper.className = 'w-full flex justify-start';
 
     const bubble = document.createElement('div');
-    bubble.className = 'max-w-[40%] px-3 py-2 rounded-lg text-sm break-words bg-gray-100 text-gray-900 flex items-center gap-2';
+    bubble.className = 'max-w-[40%] px-3 py-3 rounded-lg text-sm break-words bg-gray-800 text-gray-900 flex items-center gap-2 border border-purple-500/30';
 
     // three animated dots
     const dots = document.createElement('div');
     dots.className = 'flex items-center gap-1';
     for (let i = 0; i < 3; i++) {
       const s = document.createElement('span');
-      s.className = 'w-2 h-2 bg-gray-400 rounded-full';
+      s.className = 'w-2 h-2 bg-purple-300 rounded-full';
       s.style.display = 'inline-block';
       s.style.animation = 'typing-bounce 0.8s infinite';
       s.style.animationDelay = (i * 0.12) + 's';
