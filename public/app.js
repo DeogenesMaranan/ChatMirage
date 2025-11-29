@@ -19,6 +19,8 @@ const modalTitle = document.getElementById('modalTitle');
 const modalMessage = document.getElementById('modalMessage');
 const modalSkip = document.getElementById('modalSkip');
 const modalClose = document.getElementById('modalClose');
+const modalRow = document.getElementById('row');
+let customModalButtons = [];
 const debugToggle = document.getElementById('debugToggle');
 const debugArea = document.getElementById('debugArea');
 
@@ -27,13 +29,8 @@ function addMessage(from, text) {
   wrapper.className = 'w-full flex';
   const bubble = document.createElement('div');
   bubble.className = 'max-w-[80%] px-3 py-2 rounded-lg text-sm break-words shadow';
-  const label = document.createElement('div');
-  label.className = 'text-xs opacity-70 mb-1';
-  label.textContent = from === 'me' ? 'Me' : 'Partner';
   const textNode = document.createElement('div');
   textNode.textContent = text;
-
-  bubble.appendChild(label);
   bubble.appendChild(textNode);
 
   if (from === 'me') {
@@ -98,13 +95,47 @@ function hideOverlay(){
 }
 
 function showModal(title, message){
+  // Cleanup any custom modal buttons and show default footer buttons
+  cleanupCustomModalButtons();
   modalTitle.textContent = title || 'Notice';
   modalMessage.textContent = message || '';
+  if (modalClose) modalClose.style.display = '';
+  if (modalSkip) modalSkip.style.display = '';
   modalBackdrop.style.display = 'flex';
 }
 
 function hideModal(){
   modalBackdrop.style.display = 'none';
+  cleanupCustomModalButtons();
+}
+
+function cleanupCustomModalButtons() {
+  if (!modalRow) return;
+  // Remove any custom buttons we added
+  customModalButtons.forEach(b => { if (b && b.parentNode === modalRow) modalRow.removeChild(b); });
+  customModalButtons = [];
+  // Ensure default buttons are visible
+  if (modalClose) modalClose.style.display = '';
+  if (modalSkip) modalSkip.style.display = '';
+}
+
+function showCustomModal(title, message, buttons) {
+  modalTitle.textContent = title || 'Notice';
+  modalMessage.textContent = message || '';
+  if (modalClose) modalClose.style.display = 'none';
+  if (modalSkip) modalSkip.style.display = 'none';
+
+  if (modalRow) {
+    buttons.forEach(b => {
+      const btn = document.createElement('button');
+      btn.textContent = b.text;
+      if (b.className) btn.className = b.className;
+      btn.onclick = () => { try { b.onclick && b.onclick(); } catch (e) { console.error(e); } };
+      modalRow.appendChild(btn);
+      customModalButtons.push(btn);
+    });
+  }
+  modalBackdrop.style.display = 'flex';
 }
 
 function disableInputControls(flag){
@@ -156,7 +187,6 @@ function connectSocket(){
       statusEl.textContent = `Paired — Partner: ${data.partnerType}`;
       hideOverlay();
     }
-    appendPromptArea('Paired! Say hi.');
     socket.emit('request_history', { sessionId });
     updateDebug();
   });
@@ -177,6 +207,8 @@ function connectSocket(){
       }
     } catch (e) { }
 
+    const existingTyping = document.getElementById('typingBubble');
+    if (existingTyping) existingTyping.remove();
     addMessage('partner', data.text);
   });
 
@@ -200,32 +232,22 @@ function connectSocket(){
   socket.on('partner_stop_typing', () => { showTyping(false); });
 
   socket.on('turing_prompt', (data) => {
-    promptArea.innerHTML = '';
-    const p = document.createElement('div');
-    p.textContent = data.prompt;
-    promptArea.appendChild(p);
-    const humanBtn = document.createElement('button');
-    humanBtn.textContent = 'Human';
-    humanBtn.onclick = () => submitGuess('Human');
-    promptArea.appendChild(humanBtn);
-    const aiBtn = document.createElement('button');
-    aiBtn.textContent = 'AI';
-    aiBtn.onclick = () => submitGuess('AI');
-    promptArea.appendChild(aiBtn);
+    showCustomModal('Turing Test', data.prompt, [
+      { text: 'Human', className: 'px-3 py-2 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-200', onclick: () => { submitGuess('Human'); } },
+      { text: 'AI', className: 'px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200', onclick: () => { submitGuess('AI'); } }
+    ]);
   });
 
   socket.on('guess_result', (data) => {
-    if (data.correct) appendPromptArea('Your guess was correct. Waiting for continue/end options...');
-    else appendPromptArea('Incorrect guess.');
+    const message = data && data.correct ? 'Your guess was correct.' : 'Incorrect guess.';
+    showCustomModal('Guess Result', message, [ { text: 'Close', className: 'px-3 py-2 rounded-md bg-gray-100 hover:bg-gray-200', onclick: () => { hideModal(); } } ]);
   });
 
   socket.on('post_guess_options', (data) => {
-    promptArea.innerHTML = '';
-    const p = document.createElement('div');
-    p.textContent = data.message;
-    promptArea.appendChild(p);
-    const cont = document.createElement('button'); cont.textContent = 'Continue'; cont.onclick = () => submitContinueChoice('continue'); promptArea.appendChild(cont);
-    const end = document.createElement('button'); end.textContent = 'End Chat'; end.onclick = () => submitContinueChoice('end'); promptArea.appendChild(end);
+    showCustomModal('Continue or End', data.message, [
+      { text: 'Continue', className: 'px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200', onclick: () => { submitContinueChoice('continue'); } },
+      { text: 'End Chat', className: 'px-3 py-2 rounded-md border border-red-300 text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-200', onclick: () => { submitContinueChoice('end'); } }
+    ]);
   });
 
   socket.on('resume_chat', (data) => { appendPromptArea(data.message); setTimeout(() => (promptArea.innerHTML = ''), 1500); });
@@ -250,13 +272,13 @@ function connectSocket(){
 function submitGuess(guess) {
   if (!sessionId || !socket) return;
   socket.emit('submit_guess', { sessionId, guess });
-  appendPromptArea('You guessed: ' + guess);
+  hideModal();
 }
 
 function submitContinueChoice(choice) {
   if (!sessionId || !socket) return;
   socket.emit('submit_continue_choice', { sessionId, choice });
-  appendPromptArea('You chose: ' + choice);
+  hideModal();
 }
 
 function appendPromptArea(text) {
@@ -270,8 +292,45 @@ let typingTimeout = null;
 const TYPING_DELAY = 1400;
 
 function showTyping(flag) {
-  if (!typingIndicator) return;
-  typingIndicator.textContent = flag ? 'Partner is typing...' : '';
+  if (!messagesEl) return;
+  const existing = document.getElementById('typingBubble');
+  if (flag) {
+    if (existing) return;
+    const wrapper = document.createElement('div');
+    wrapper.id = 'typingBubble';
+    wrapper.className = 'w-full flex justify-start';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'max-w-[40%] px-3 py-2 rounded-lg text-sm break-words bg-gray-100 text-gray-900 flex items-center gap-2';
+
+    // three animated dots
+    const dots = document.createElement('div');
+    dots.className = 'flex items-center gap-1';
+    for (let i = 0; i < 3; i++) {
+      const s = document.createElement('span');
+      s.className = 'w-2 h-2 bg-gray-400 rounded-full';
+      s.style.display = 'inline-block';
+      s.style.animation = 'typing-bounce 0.8s infinite';
+      s.style.animationDelay = (i * 0.12) + 's';
+      dots.appendChild(s);
+    }
+
+    bubble.appendChild(dots);
+    wrapper.appendChild(bubble);
+    messagesEl.appendChild(wrapper);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  } else {
+    if (existing) existing.remove();
+  }
+}
+
+// Add small keyframe for typing dots (fallback if Tailwind doesn't include it)
+const styleId = 'chatmirage-typing-style';
+if (!document.getElementById(styleId)) {
+  const style = document.createElement('style');
+  style.id = styleId;
+  style.textContent = `@keyframes typing-bounce { 0%{ transform: translateY(0);} 50%{ transform: translateY(-4px);} 100%{ transform: translateY(0);} }`;
+  document.head.appendChild(style);
 }
 
 inputEl.addEventListener('input', () => {
@@ -320,8 +379,20 @@ modalClose.onclick = () => {
 };
 
 debugToggle.onclick = () => {
-  if (debugArea.style.display === 'block') { debugArea.style.display = 'none'; debugToggle.textContent = 'Debug'; }
-  else { updateDebug(); debugArea.style.display = 'block'; debugToggle.textContent = 'Hide Debug'; }
+  // Toggle debug area and show status only when debug is visible.
+  const isHidden = debugArea.classList.contains('hidden') || debugArea.style.display === 'none' || debugArea.style.display === '' && debugArea.classList.contains('hidden');
+  if (isHidden) {
+    updateDebug();
+    debugArea.classList.remove('hidden');
+    debugArea.style.display = '';
+    debugToggle.textContent = 'Hide Debug';
+    if (statusEl) statusEl.classList.remove('hidden');
+  } else {
+    debugArea.classList.add('hidden');
+    debugArea.style.display = 'none';
+    debugToggle.textContent = 'Debug';
+    if (statusEl) statusEl.classList.add('hidden');
+  }
 };
 
 function updateDebug(){

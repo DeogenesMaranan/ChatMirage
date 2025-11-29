@@ -2,7 +2,18 @@ const { aiRespond } = require('./ai');
 
 const { randomBytes } = require('crypto');
 
-const MESSAGE_THRESHOLD = 10;
+const DEFAULT_HUMAN_MESSAGE_THRESHOLD = 5;
+const DEFAULT_MESSAGE_THRESHOLD = 10;
+
+const HUMAN_MESSAGE_THRESHOLD = (() => {
+  const v = parseInt(process.env.HUMAN_MESSAGE_THRESHOLD, 10);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_HUMAN_MESSAGE_THRESHOLD;
+})();
+
+const MESSAGE_THRESHOLD = (() => {
+  const v = parseInt(process.env.MESSAGE_THRESHOLD, 10);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_MESSAGE_THRESHOLD;
+})();
 
 const sessions = new Map();
 const waitingQueue = [];
@@ -95,25 +106,20 @@ function init(io) {
         sess.aiQueue = sess.aiQueue || Promise.resolve();
         sess.aiQueue = sess.aiQueue.then(async () => {
           try {
-            // Show AI typing while we generate a reply
             socket.emit('partner_typing', { userId: 'ai' });
 
-            // Generate the AI text
             const aiText = await aiRespond(sess.chatHistory.slice());
 
-            // Calculate a realistic typing duration based on message length
-            const PER_CHAR_MS = 25; // ms per character (adjust for speed)
-            const MIN_TYPING_MS = 600; // minimum typing time
-            const MAX_TYPING_MS = 4000; // cap maximum typing time
+            const PER_CHAR_MS = 25;
+            const MIN_TYPING_MS = 600;
+            const MAX_TYPING_MS = 4000;
             const typingMs = Math.min(Math.max(Math.floor(aiText.length * PER_CHAR_MS), MIN_TYPING_MS), MAX_TYPING_MS);
 
-            // Keep showing typing for the computed duration
             await new Promise((r) => setTimeout(r, typingMs));
 
             const aiMsg = { from: 'ai', text: aiText };
             sess.chatHistory.push(aiMsg);
 
-            // Stop typing indicator then send the AI message
             socket.emit('partner_stop_typing', { userId: 'ai' });
             socket.emit('chat_message', { from: 'partner', text: aiText });
           } catch (err) {
@@ -133,12 +139,20 @@ function init(io) {
         });
       }
 
-      if (!sess.prompted && sess.chatHistory.length % MESSAGE_THRESHOLD === 0) {
-        sess.prompted = true;
-        const prompt = 'After these messages, guess whether your partner is Human or AI.';
-        if (sess.partnerIsAI) {
-          sess.humanSockets.forEach((s) => s.emit('turing_prompt', { prompt }));
-        } else {
+      if (!sess.prompted) {
+        const chatHistory = sess.chatHistory || [];
+        const humanCount = chatHistory.filter(m => m && m.from === 'human').length;
+        const totalCount = chatHistory.length;
+
+        const numHumanParticipants = (sess.humanSockets && sess.humanSockets.length) ? sess.humanSockets.length : 1;
+
+        const reachedHumanThreshold = humanCount >= (HUMAN_MESSAGE_THRESHOLD * numHumanParticipants);
+
+        const reachedTotalThreshold = totalCount >= MESSAGE_THRESHOLD && (totalCount % MESSAGE_THRESHOLD) === 0;
+
+        if (reachedHumanThreshold || reachedTotalThreshold) {
+          sess.prompted = true;
+          const prompt = 'After these messages, guess whether your partner is Human or AI.';
           sess.humanSockets.forEach((s) => s.emit('turing_prompt', { prompt }));
         }
       }
@@ -181,23 +195,12 @@ function init(io) {
       const guess = data && data.guess ? String(data.guess).toLowerCase() : '';
       const sess = sessions.get(sid);
       if (!sess) return;
-
       const actualIsAI = !!sess.partnerIsAI;
       const guessedAI = guess === 'ai' || guess === 'a.i.' || guess === 'a i';
       const correct = (guessedAI && actualIsAI) || (!guessedAI && !actualIsAI);
 
-      socket.emit('guess_result', { correct });
-
-      if (correct && actualIsAI && guessedAI) {
-        sess.humanSockets.forEach((s) => {
-          s.emit('chat_ended', { reason: 'guessed_ai_correctly' });
-          socketToSession.delete(s.id);
-        });
-        sessions.delete(sid);
-        return;
-      }
-
-      socket.emit('post_guess_options', { message: correct ? 'Correct guess.' : 'Incorrect guess.' });
+      sess.pendingGuess = { socketId: socket.id, correct, guessedAI };
+      socket.emit('post_guess_options', { message: 'Would you like to continue chatting or end the chat? Choose Continue to keep chatting or End Chat to finish.' });
     });
 
     socket.on('submit_continue_choice', (data) => {
@@ -206,8 +209,15 @@ function init(io) {
       const choice = data && data.choice ? String(data.choice).toLowerCase() : '';
       const sess = sessions.get(sid);
       if (!sess) return;
-
       if (choice === 'end') {
+        if (sess.pendingGuess && sess.pendingGuess.socketId) {
+          const guessSocketId = sess.pendingGuess.socketId;
+          const targetSocket = sess.humanSockets.find(s => s.id === guessSocketId);
+          if (targetSocket) {
+            targetSocket.emit('guess_result', { correct: !!sess.pendingGuess.correct });
+          }
+        }
+
         sess.humanSockets.forEach((s) => {
           s.emit('chat_ended', { reason: 'ended_by_user' });
           socketToSession.delete(s.id);
@@ -219,6 +229,7 @@ function init(io) {
       if (choice === 'continue') {
         sess.prompted = false;
         sess.chatHistory = sess.chatHistory || [];
+        delete sess.pendingGuess;
         sess.humanSockets.forEach((s) => s.emit('resume_chat', { message: 'Continuing chat...' }));
       }
     });
