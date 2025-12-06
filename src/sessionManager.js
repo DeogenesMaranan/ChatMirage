@@ -64,13 +64,18 @@ function clearWaitingTimeout(socketId) {
 function startWaitingTimeout(socket, io) {
   if (!socket || !socket.id) return;
   clearWaitingTimeout(socket.id);
+  const timeoutJitter = WAITING_TIMEOUT_JITTER_MS > 0
+    ? Math.floor(Math.random() * (WAITING_TIMEOUT_JITTER_MS + 1))
+    : 0;
+  const delayBeforeFallback = Math.max(0, WAITING_TIMEOUT_MS + timeoutJitter);
+
   const timer = setTimeout(() => {
     waitingTimeouts.delete(socket.id);
     const idx = waitingQueue.findIndex((entry) => entry && entry.socket && entry.socket.id === socket.id);
     if (idx !== -1) waitingQueue.splice(idx, 1);
     if (!socket.connected) return;
     pairWithAI(socket, io);
-  }, WAITING_TIMEOUT_MS);
+  }, delayBeforeFallback);
   waitingTimeouts.set(socket.id, timer);
 }
 
@@ -89,6 +94,10 @@ const DEFAULT_HUMAN_MESSAGE_THRESHOLD = 5;
 const DEFAULT_MESSAGE_THRESHOLD = 10;
 const DEFAULT_TYPING_INDICATOR_DELAY_MS = 500;
 const DEFAULT_WAITING_TIMEOUT_MS = 30000;
+const DEFAULT_AI_PRE_TYPING_DELAY_MS = 600;
+const DEFAULT_AI_PRE_TYPING_JITTER_MS = 300;
+const DEFAULT_TYPING_INDICATOR_JITTER_MS = 200;
+const DEFAULT_WAITING_TIMEOUT_JITTER_MS = 5000;
 
 const HUMAN_MESSAGE_THRESHOLD = (() => {
   const v = parseInt(process.env.HUMAN_MESSAGE_THRESHOLD, 10);
@@ -105,9 +114,29 @@ const TYPING_INDICATOR_DELAY_MS = (() => {
   return Number.isFinite(v) && v >= 0 ? v : DEFAULT_TYPING_INDICATOR_DELAY_MS;
 })();
 
+const TYPING_INDICATOR_JITTER_MS = (() => {
+  const v = parseInt(process.env.TYPING_INDICATOR_JITTER_MS, 10);
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_TYPING_INDICATOR_JITTER_MS;
+})();
+
 const WAITING_TIMEOUT_MS = (() => {
   const v = parseInt(process.env.WAITING_TIMEOUT_MS, 10);
   return Number.isFinite(v) && v >= 0 ? v : DEFAULT_WAITING_TIMEOUT_MS;
+})();
+
+const WAITING_TIMEOUT_JITTER_MS = (() => {
+  const v = parseInt(process.env.WAITING_TIMEOUT_JITTER_MS, 10);
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_WAITING_TIMEOUT_JITTER_MS;
+})();
+
+const AI_PRE_TYPING_DELAY_MS = (() => {
+  const v = parseInt(process.env.AI_PRE_TYPING_DELAY_MS, 10);
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_AI_PRE_TYPING_DELAY_MS;
+})();
+
+const AI_PRE_TYPING_JITTER_MS = (() => {
+  const v = parseInt(process.env.AI_PRE_TYPING_JITTER_MS, 10);
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_AI_PRE_TYPING_JITTER_MS;
 })();
 
 const sessions = new Map();
@@ -222,9 +251,17 @@ function init(io) {
         sess.aiQueue = sess.aiQueue || Promise.resolve();
         sess.aiQueue = sess.aiQueue.then(async () => {
           try {
+            const aiResponsePromise = aiRespond(sess.chatHistory.slice());
+
+            const jitter = AI_PRE_TYPING_JITTER_MS > 0 ? Math.floor(Math.random() * (AI_PRE_TYPING_JITTER_MS + 1)) : 0;
+            const delayBeforeTyping = Math.max(0, AI_PRE_TYPING_DELAY_MS + jitter);
+            if (delayBeforeTyping > 0) {
+              await new Promise((r) => setTimeout(r, delayBeforeTyping));
+            }
+
             socket.emit('partner_typing', { userId: 'ai' });
 
-            const aiText = await aiRespond(sess.chatHistory.slice());
+            const aiText = await aiResponsePromise;
 
             const PER_CHAR_MS = 25;
             const MIN_TYPING_MS = 600;
@@ -289,6 +326,11 @@ function init(io) {
         clearTimeout(existingState.timer);
       }
 
+      const typingJitter = TYPING_INDICATOR_JITTER_MS > 0
+        ? Math.floor(Math.random() * (TYPING_INDICATOR_JITTER_MS + 1))
+        : 0;
+      const delayBeforeIndicator = Math.max(0, TYPING_INDICATOR_DELAY_MS + typingJitter);
+
       existingState.timer = setTimeout(() => {
         const state = typingIndicatorState.get(socket.id);
         if (!state) return;
@@ -313,7 +355,7 @@ function init(io) {
             s.emit('partner_typing', { userId: socket.userId });
           }
         });
-      }, TYPING_INDICATOR_DELAY_MS);
+      }, delayBeforeIndicator);
 
       typingIndicatorState.set(socket.id, existingState);
     });
