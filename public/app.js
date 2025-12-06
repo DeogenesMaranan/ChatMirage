@@ -436,7 +436,7 @@ modalSkip.onclick = () => {
 
 modalClose.onclick = () => {
   hideModal();
-  disableInputControls(true);
+  showLanding();
   statusEl.textContent = 'Chat closed.';
 };
 
