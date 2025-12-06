@@ -308,7 +308,11 @@ function connectSocket(){
 
   socket.on('chat_ended', (data) => {
     const reason = data && data.reason ? data.reason : 'ended';
-    showModal('Chat ended', 'Chat ended: ' + reason + '\nYou can skip to find a new partner or close.');
+    const partnerLabel = data && data.partnerType ? (data.partnerType === 'ai' ? 'AI' : 'Human') : null;
+    const revealLine = data && data.message ? data.message : partnerLabel ? `Chat ended. Your partner was ${partnerLabel}.` : 'Chat ended.';
+    const footer = 'You can skip to find a new partner or close.';
+    const modalText = [revealLine, footer].filter(Boolean).join('\n');
+    showModal('Chat ended', modalText);
     statusEl.textContent = 'Chat ended.';
     disableInputControls(true);
     clearSession();
@@ -316,7 +320,11 @@ function connectSocket(){
 
   socket.on('partner_disconnected', (data) => {
     const msg = (data && data.message) ? data.message : 'Partner disconnected unexpectedly';
-    showModal('Partner disconnected', msg + '\nYou can skip to find a new partner or close.');
+    const partnerLabel = data && data.partnerType ? (data.partnerType === 'ai' ? 'AI' : 'Human') : null;
+    const revealLine = partnerLabel ? `They were ${partnerLabel}.` : '';
+    const footer = 'You can skip to find a new partner or close.';
+    const modalText = [msg, revealLine, footer].filter(Boolean).join('\n');
+    showModal('Partner disconnected', modalText);
     statusEl.textContent = 'Partner disconnected.';
     disableInputControls(true);
     clearSession();

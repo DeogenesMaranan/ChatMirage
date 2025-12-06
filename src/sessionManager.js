@@ -74,6 +74,17 @@ function startWaitingTimeout(socket, io) {
   waitingTimeouts.set(socket.id, timer);
 }
 
+function emitChatEndedWithReveal(socket, sess, reason) {
+  if (!socket) return;
+  const partnerType = sess && sess.partnerIsAI ? 'ai' : 'human';
+  const partnerLabel = partnerType === 'ai' ? 'AI' : 'Human';
+  socket.emit('chat_ended', {
+    reason,
+    partnerType,
+    message: `Chat ended. Your partner was ${partnerLabel}.`
+  });
+}
+
 const DEFAULT_HUMAN_MESSAGE_THRESHOLD = 5;
 const DEFAULT_MESSAGE_THRESHOLD = 10;
 const DEFAULT_TYPING_INDICATOR_DELAY_MS = 500;
@@ -135,8 +146,11 @@ function init(io) {
           if (sess.humanSockets) {
             sess.humanSockets.forEach((s) => {
               if (s.id !== socket.id) {
-                s.emit('partner_disconnected', { message: 'Partner disconnected' });
-                s.emit('chat_ended', { reason: 'partner_disconnected' });
+                s.emit('partner_disconnected', {
+                  message: 'Partner disconnected',
+                  partnerType: sess && sess.partnerIsAI ? 'ai' : 'human'
+                });
+                emitChatEndedWithReveal(s, sess, 'partner_disconnected');
                 socketToSession.delete(s.id);
                 clearTypingIndicatorState(s.id);
               }
@@ -159,8 +173,11 @@ function init(io) {
           if (sess.humanSockets) {
             sess.humanSockets.forEach((s) => {
               if (s.id !== socket.id) {
-                s.emit('partner_disconnected', { message: 'Partner skipped' });
-                s.emit('chat_ended', { reason: 'skipped' });
+                s.emit('partner_disconnected', {
+                  message: 'Partner skipped',
+                  partnerType: sess && sess.partnerIsAI ? 'ai' : 'human'
+                });
+                emitChatEndedWithReveal(s, sess, 'skipped');
                 socketToSession.delete(s.id);
                 clearTypingIndicatorState(s.id);
               }
@@ -386,7 +403,7 @@ function init(io) {
         }
 
         sess.humanSockets.forEach((s) => {
-          s.emit('chat_ended', { reason: 'ended_by_user' });
+          emitChatEndedWithReveal(s, sess, 'ended_by_user');
           socketToSession.delete(s.id);
           clearTypingIndicatorState(s.id);
         });
