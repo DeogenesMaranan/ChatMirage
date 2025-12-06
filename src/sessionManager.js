@@ -44,8 +44,40 @@ function persistGuessRecord(record) {
   }
 }
 
+function clearTypingIndicatorState(socketId) {
+  const state = typingIndicatorState.get(socketId);
+  if (!state) return;
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+  typingIndicatorState.delete(socketId);
+}
+
+function clearWaitingTimeout(socketId) {
+  const timer = waitingTimeouts.get(socketId);
+  if (!timer) return;
+  clearTimeout(timer);
+  waitingTimeouts.delete(socketId);
+}
+
+function startWaitingTimeout(socket, io) {
+  if (!socket || !socket.id) return;
+  clearWaitingTimeout(socket.id);
+  const timer = setTimeout(() => {
+    waitingTimeouts.delete(socket.id);
+    const idx = waitingQueue.findIndex((entry) => entry && entry.socket && entry.socket.id === socket.id);
+    if (idx !== -1) waitingQueue.splice(idx, 1);
+    if (!socket.connected) return;
+    pairWithAI(socket, io);
+  }, WAITING_TIMEOUT_MS);
+  waitingTimeouts.set(socket.id, timer);
+}
+
 const DEFAULT_HUMAN_MESSAGE_THRESHOLD = 5;
 const DEFAULT_MESSAGE_THRESHOLD = 10;
+const DEFAULT_TYPING_INDICATOR_DELAY_MS = 500;
+const DEFAULT_WAITING_TIMEOUT_MS = 30000;
 
 const HUMAN_MESSAGE_THRESHOLD = (() => {
   const v = parseInt(process.env.HUMAN_MESSAGE_THRESHOLD, 10);
@@ -57,9 +89,21 @@ const MESSAGE_THRESHOLD = (() => {
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_MESSAGE_THRESHOLD;
 })();
 
+const TYPING_INDICATOR_DELAY_MS = (() => {
+  const v = parseInt(process.env.TYPING_INDICATOR_DELAY_MS, 10);
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_TYPING_INDICATOR_DELAY_MS;
+})();
+
+const WAITING_TIMEOUT_MS = (() => {
+  const v = parseInt(process.env.WAITING_TIMEOUT_MS, 10);
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_WAITING_TIMEOUT_MS;
+})();
+
 const sessions = new Map();
 const waitingQueue = [];
 const socketToSession = new Map();
+const typingIndicatorState = new Map();
+const waitingTimeouts = new Map();
 
 function makeSessionId() {
   return 's_' + randomBytes(6).toString('hex');
@@ -79,6 +123,7 @@ function init(io) {
       for (let i = 0; i < waitingQueue.length; i++) {
         if (waitingQueue[i].socket.id === socket.id) {
           waitingQueue.splice(i, 1);
+          clearWaitingTimeout(socket.id);
           break;
         }
       }
@@ -93,12 +138,16 @@ function init(io) {
                 s.emit('partner_disconnected', { message: 'Partner disconnected' });
                 s.emit('chat_ended', { reason: 'partner_disconnected' });
                 socketToSession.delete(s.id);
+                clearTypingIndicatorState(s.id);
               }
             });
           }
           sessions.delete(sid);
         }
         socketToSession.delete(socket.id);
+        clearTypingIndicatorState(socket.id);
+      } else {
+        clearTypingIndicatorState(socket.id);
       }
     });
 
@@ -113,12 +162,18 @@ function init(io) {
                 s.emit('partner_disconnected', { message: 'Partner skipped' });
                 s.emit('chat_ended', { reason: 'skipped' });
                 socketToSession.delete(s.id);
+                clearTypingIndicatorState(s.id);
               }
             });
           }
           sessions.delete(sid);
         }
         socketToSession.delete(socket.id);
+        clearTypingIndicatorState(socket.id);
+        clearWaitingTimeout(socket.id);
+      } else {
+        clearTypingIndicatorState(socket.id);
+        clearWaitingTimeout(socket.id);
       }
 
       pairForSocket(socket, forced, io);
@@ -207,15 +262,43 @@ function init(io) {
       if (!sid) return;
       const sess = sessions.get(sid);
       if (!sess) return;
-      
-      if (sess.partnerIsAI) return;
-      if (sess.humanSockets) {
-        sess.humanSockets.forEach((s) => {
+
+      if (sess.partnerIsAI || !Array.isArray(sess.humanSockets)) return;
+
+      const existingState = typingIndicatorState.get(socket.id) || { timer: null, emitted: false };
+      if (existingState.emitted) return;
+
+      if (existingState.timer) {
+        clearTimeout(existingState.timer);
+      }
+
+      existingState.timer = setTimeout(() => {
+        const state = typingIndicatorState.get(socket.id);
+        if (!state) return;
+        state.timer = null;
+
+        const currentSid = socketToSession.get(socket.id);
+        if (!currentSid) {
+          typingIndicatorState.delete(socket.id);
+          return;
+        }
+        const currentSess = sessions.get(currentSid);
+        if (!currentSess || currentSess.partnerIsAI || !Array.isArray(currentSess.humanSockets)) {
+          typingIndicatorState.delete(socket.id);
+          return;
+        }
+
+        state.emitted = true;
+        typingIndicatorState.set(socket.id, state);
+
+        currentSess.humanSockets.forEach((s) => {
           if (s.id !== socket.id) {
             s.emit('partner_typing', { userId: socket.userId });
           }
         });
-      }
+      }, TYPING_INDICATOR_DELAY_MS);
+
+      typingIndicatorState.set(socket.id, existingState);
     });
 
     socket.on('stop_typing', (data) => {
@@ -224,13 +307,34 @@ function init(io) {
       const sess = sessions.get(sid);
       if (!sess) return;
       if (sess.partnerIsAI) return;
-      if (sess.humanSockets) {
-        sess.humanSockets.forEach((s) => {
-          if (s.id !== socket.id) {
-            s.emit('partner_stop_typing', { userId: socket.userId });
-          }
-        });
+      if (!Array.isArray(sess.humanSockets)) return;
+
+      const state = typingIndicatorState.get(socket.id);
+      if (state) {
+        if (state.timer) {
+          clearTimeout(state.timer);
+          state.timer = null;
+        }
+
+        if (state.emitted) {
+          state.emitted = false;
+          sess.humanSockets.forEach((s) => {
+            if (s.id !== socket.id) {
+              s.emit('partner_stop_typing', { userId: socket.userId });
+            }
+          });
+        }
+
+        typingIndicatorState.delete(socket.id);
+        return;
       }
+
+      // Fallback to previous behavior if state is missing
+      sess.humanSockets.forEach((s) => {
+        if (s.id !== socket.id) {
+          s.emit('partner_stop_typing', { userId: socket.userId });
+        }
+      });
     });
 
     socket.on('submit_guess', (data) => {
@@ -284,6 +388,7 @@ function init(io) {
         sess.humanSockets.forEach((s) => {
           s.emit('chat_ended', { reason: 'ended_by_user' });
           socketToSession.delete(s.id);
+          clearTypingIndicatorState(s.id);
         });
         sessions.delete(sid);
         return;
@@ -311,6 +416,9 @@ function pairForSocket(socket, forced, io) {
     let other = null;
     while (waitingQueue.length > 0) {
       const candidate = waitingQueue.shift();
+      if (candidate && candidate.socket && candidate.socket.id) {
+        clearWaitingTimeout(candidate.socket.id);
+      }
       if (!candidate || !candidate.socket) continue;
       if (candidate.socket.id === socket.id) {
         continue;
@@ -324,6 +432,8 @@ function pairForSocket(socket, forced, io) {
       return;
     }
 
+    clearWaitingTimeout(socket.id);
+    clearWaitingTimeout(other.socket.id);
     const sid = makeSessionId();
     const sess = {
       id: sid,
@@ -339,6 +449,8 @@ function pairForSocket(socket, forced, io) {
     sessions.set(sid, sess);
     socketToSession.set(socket.id, sid);
     socketToSession.set(other.socket.id, sid);
+    clearTypingIndicatorState(socket.id);
+    clearTypingIndicatorState(other.socket.id);
 
     socket.emit('paired', { sessionId: sid, partnerType: 'human', partnerId: other.userId });
     other.socket.emit('paired', { sessionId: sid, partnerType: 'human', partnerId: socket.userId });
@@ -351,7 +463,9 @@ function pairForSocket(socket, forced, io) {
   } else {
     const alreadyQueued = waitingQueue.some((e) => e && e.socket && e.socket.id === socket.id);
     if (!alreadyQueued) {
-      waitingQueue.push({ socket, userId: socket.userId });
+        clearTypingIndicatorState(socket.id);
+      waitingQueue.push({ socket, userId: socket.userId, enqueuedAt: Date.now() });
+      startWaitingTimeout(socket, io);
     }
     socket.emit('paired', { sessionId: null, partnerType: 'waiting', partnerId: null });
     socket.emit('chat_history', { chatHistory: [] });
@@ -371,6 +485,8 @@ function pairWithAI(socket, io) {
   };
   sessions.set(sid, sess);
   socketToSession.set(socket.id, sid);
+  clearTypingIndicatorState(socket.id);
+  clearWaitingTimeout(socket.id);
 
   socket.emit('paired', { sessionId: sid, partnerType: 'ai', partnerId: 'ai' });
   socket.emit('chat_history', { chatHistory: [] });
