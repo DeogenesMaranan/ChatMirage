@@ -79,27 +79,29 @@ async function fetchAndShowStats() {
     if (!res.ok) throw new Error('failed');
     const data = await res.json();
     const { total = 0, TP = 0, FP = 0, FN = 0, TN = 0 } = data;
-    if (!statsBox) return;
+    if (!statsBox || !statsSummary || !statsList) return;
     statsBox.classList.remove('hidden');
     statsSummary.textContent = total === 0 ? 'No community guesses yet.' : `Total community guesses: ${total}`;
-    
+
     const friendly = [
-      { k: 'TP', label: "People guessed 'AI' and were right", v: TP },
-      { k: 'FP', label: "People guessed 'AI' but were wrong (it was a human)", v: FP },
-      { k: 'FN', label: "People guessed 'Human' but were wrong (it was an AI)", v: FN },
-      { k: 'TN', label: "People guessed 'Human' and were right", v: TN },
+      { k: 'TP', label: "Guessed 'AI' and were right", v: TP },
+      { k: 'FP', label: "Guessed 'AI' but it was human", v: FP },
+      { k: 'FN', label: "Guessed 'Human' but it was AI", v: FN },
+      { k: 'TN', label: "Guessed 'Human' and were right", v: TN },
     ];
-    
-    const tbody = statsList.querySelector('tbody');
-    tbody.innerHTML = '';
+
+    statsList.innerHTML = '';
     friendly.forEach(item => {
-      const tr = document.createElement('tr');
-      tr.className = 'border-b border-purple-500/10 hover:bg-purple-500/5 transition-colors';
-      tr.innerHTML = `
-        <td class="py-2 px-3">${item.label}</td>
-        <td class="py-2 px-3 text-right font-semibold text-purple-100">${item.v}</td>
+      const card = document.createElement('div');
+      card.className = 'rounded-xl border border-purple-500/20 bg-gray-900/50 px-3 py-2 flex flex-col gap-1 hover:border-purple-400/50 transition-colors';
+      card.innerHTML = `
+        <div class="flex items-center justify-between text-[10px] uppercase tracking-widest text-purple-300/70">
+          <span>${item.k}</span>
+          <span class="text-purple-200/60">${item.v}</span>
+        </div>
+        <p class="text-[12px] font-medium text-purple-100/90 leading-tight">${item.label}</p>
       `;
-      tbody.appendChild(tr);
+      statsList.appendChild(card);
     });
   } catch (e) {
     if (statsSummary) statsSummary.textContent = 'Failed to load community summary.';

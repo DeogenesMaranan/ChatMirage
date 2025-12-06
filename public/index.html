@@ -4,6 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ChatMirage</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AD%3C/text%3E%3C/svg%3E"
+    />
     <script src="https://cdn.tailwindcss.com"></script>
 
     <!-- LUCIDE ICONS -->
@@ -60,27 +64,25 @@
               </div>
 
               <!-- COMMUNITY STATS BOX -->
-              <div id="landingStats" class="mt-3 mx-4 text-left">
-                <div class="text-sm text-purple-300 font-medium">Community Guess Summary</div>
-
-                <div id="statsBox" class="mt-2 bg-gray-900/50 border border-purple-500/30 rounded-lg p-3 text-sm text-purple-200 hidden">
-
-                  <div id="statsSummary" class="mb-3 text-purple-100 font-medium">Loading summary...</div>
-
-                  <div class="overflow-x-auto">
-                    <table id="statsList" class="w-full text-sm">
-                      <thead>
-                        <tr class="border-b border-purple-500/20">
-                          <th class="text-left py-2 px-3 text-purple-300 font-medium">Scenario</th>
-                          <th class="text-right py-2 px-3 text-purple-300 font-medium">Count</th>
-                        </tr>
-                      </thead>
-                      <tbody class="text-purple-200/80"></tbody>
-                    </table>
+              <div id="landingStats" class="mt-6 mx-auto w-full max-w-xl">
+                <div id="statsBox" class="hidden bg-gray-900/60 border border-purple-500/30 rounded-2xl p-4 text-purple-100 shadow-lg shadow-purple-900/30">
+                  <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center gap-2">
+                      <span class="text-3xl" aria-hidden="true">🎭</span>
+                      <div>
+                        <p id="statsSummary" class="text-xl font-semibold tracking-tight">Loading summary...</p>
+                      </div>
+                    </div>
+                    <div class="text-[11px] uppercase tracking-[0.3em] text-purple-300/70 flex items-center gap-1">
+                      <span class="w-1.5 h-1.5 rounded-full bg-green-400 animate-ping"></span>
+                      Live
+                    </div>
                   </div>
 
-                  <div class="mt-3 text-xs text-purple-400/50 pt-3 border-t border-purple-500/10">
-                    These numbers show how often people guessed whether their partner was an AI. They help you understand how convincing conversations are — explained simply.
+                  <div id="statsList" class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"></div>
+
+                  <div class="mt-3 text-[11px] text-purple-200/60 leading-relaxed">
+                    Quick glance at how confident people felt after their chats.
                   </div>
                 </div>
               </div>
